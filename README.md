@@ -8,7 +8,8 @@
 * **Recursive Folder Processing:** สแกนหาไฟล์ DICOM ในทุกโฟลเดอร์ย่อย (Subdirectories) โดยอัตโนมัติ และสร้างโครงสร้างโฟลเดอร์ปลายทาง (Output Directory Hierarchy) ให้เหมือนต้นฉบับทุกประการ
 * **Advanced PHI Removal:** ลบข้อมูลความลับผู้ป่วย รวมถึงเส้นวาดระยะและกล่องข้อความ (Measurements & Annotations) ที่ฝังอยู่ใน Metadata
 * **Non-destructive Process:** ไม่มีการเขียนทับ (Overwrite) ไฟล์ต้นฉบับเด็ดขาด ไฟล์ที่ผ่านการประมวลผลจะถูกบันทึกแยกต่างหากพร้อมสร้างโฟลเดอร์ใหม่ให้อัตโนมัติ
-* **Automated Summary Report:** สรุปยอดรวมจำนวนไฟล์ที่ทำงานสำเร็จ, ไฟล์เอกสารที่ถูกข้าม, และไฟล์ที่พบข้อผิดพลาดเมื่อจบกระบวนการ
+* **Automated Summary Report:** สรุปยอดรวมจำนวนไฟล์ที่ทำงานสำเร็จ, ไฟล์ที่ถูกข้าม, ไฟล์ที่พบข้อผิดพลาด, และไฟล์ที่ไม่ผ่าน QC เมื่อจบกระบวนการ พร้อมตารางเปรียบเทียบ Before vs After
+* **Robust Processing & Quality Control (QC):** ระบบตรวจสอบคุณภาพไฟล์หลังแปลง (QC) และทำการ Retry อัตโนมัติสูงสุด 3 ครั้ง หากแปลงไม่ผ่านจะมีการลบไฟล์ที่เสียทิ้งและบันทึกประวัติให้ตรวจสอบ (Failed Files Details)
 
 ## 🛠 ข้อมูลทางเทคนิคและสิ่งที่ต้องติดตั้ง (Prerequisites)
 เครื่องมือนี้พัฒนาด้วยภาษา Python โดยใช้ระบบจัดการ Dependency ที่เน้นความรวดเร็วและเสถียรอย่าง `uv`
@@ -20,12 +21,12 @@
 
 **การติดตั้งเบื้องต้น (Setup):**
 ```bash
-# สร้างโปรเจกต์และ Environment ใหม่
-uv init dicom-deidentifier
-cd dicom-deidentifier
+# 1. สร้างและเข้าสู่ Virtual Environment
+uv venv
+source .venv/bin/activate  # บน Windows ใช้ .venv\Scripts\activate
 
-# ติดตั้ง Dependency
-uv add pydicom
+# 2. ติดตั้ง Dependency ที่ต้องการ
+uv pip install pydicom
 ```
 
 ## 🚀 วิธีการใช้งาน (Usage Guide)
@@ -63,4 +64,3 @@ uv add pydicom
 `[ชื่อโฟลเดอร์ต้นทาง]_DeID_[Subject_Number]`
 
 ไฟล์ที่ถูก De-identified แล้วจะถูกเปลี่ยนชื่อโดยนำ `Subject_Number` มานำหน้าชื่อไฟล์เดิมเสมอ เพื่อป้องกันความสับสน (เช่น `SUBJ-001_image001.dcm`)
-
