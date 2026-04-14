@@ -481,7 +481,7 @@ class DataEntryDialog(BaseDialog):
             ("20210033", "Study number 3 หลัก ('933') + Site number 5 หลัก ('62001') + participant number 3 หลัก (93362001XXX)"),
             ("OP-1250-301", "6606-6XXX"),
             ("OP-1250-302", "6606-7XXX"),
-            ("BNT327-06", "Site number + participant number (XXX-XX-XXXX)"),
+            ("BNT327-06", "Site number + participant number (764-01-XXXX)"),
             ("BO43249", "XXXXX"),
             ("CT-P51 3.1", "Site number + participant number (5602XXXX)"),
             ("MB12-C-02-24", "Site number + participant number (XXXXXXXXX)"),
@@ -489,7 +489,7 @@ class DataEntryDialog(BaseDialog):
             ("MK-1022-016", "Site 4 หลัก (2924)+ Screening 5 หลัก (XXXX-YYYYY) หรือ Randomization 6 หลัก"),
             ("MK-2870-009", "Site 4 หลัก (4006)+ Screening 5 หลัก (XXXX-YYYYY) หรือ Randomization 6 หลัก"),
             ("MK-2870-023", "Site 4 หลัก (2300)+ Screening 5 หลัก (XXXX-YYYYY) หรือ Randomization 6 หลัก"),
-            ("MO41552", "XXXX"),
+            ("MO41552", "Site number + participant number (501243-XXXX)"),
             ("TAS-6417-301", "Site number + participant number (800-XXX)"),
             ("V940-011", "Site number 4 หลัก + Screening number 5 หลัก (XXXX-YYYYY)")
         ]
