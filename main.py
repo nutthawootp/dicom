@@ -1,7 +1,8 @@
 import os
+import csv
 import logging
 from pathlib import Path
-from typing import Dict, Tuple, Optional, List
+from typing import Dict, Tuple, Optional, List, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 import pydicom
@@ -35,14 +36,11 @@ class DeIDConfig:
     """Configuration for de-identification process"""
     DICOM_EXTENSIONS = {'.dcm', '.DCM'}
     SKIP_EXTENSIONS = {'.txt', '.pdf', '.docx', '.jpg', '.png'}
-    TAGS_TO_CLEAR = ['InstitutionAddress', 
-                    'PerformingPhysicianName',
-                    'PatientAge', 
-                    # 'PatientSex'
-                    ]
+    TAGS_TO_CLEAR = ['InstitutionAddress', 'PerformingPhysicianName', 'PatientAge', 'PatientSex']
     TAGS_TO_REMOVE_RANGES = [(0x5000, 0x50FF), (0x6000, 0x60FF)]
     SERIES_TO_SKIP = {'99999'}
     SECONDARY_CAPTURE_UID = '1.2.840.10008.5.1.4.1.1.7'
+    FORMATS_FILE = 'study_formats.csv'  # เพิ่มชื่อไฟล์สำหรับเก็บ Format คู่มือ
 
 CONFIG = DeIDConfig()
 
@@ -73,7 +71,7 @@ class ProcessResult:
     skip_count: int = 0
     error_count: int = 0
     qc_failed_count: int = 0 
-    failed_files_details: List[str] = field(default_factory=list) # เพิ่มตัวแปรเก็บรายละเอียดไฟล์ที่ทำ 3 รอบไม่ผ่าน
+    failed_files_details: List[str] = field(default_factory=list)
 
 # ==========================================
 # 3. DICOM Processing Service
@@ -88,7 +86,6 @@ class DICOMProcessor:
     
     @staticmethod
     def read_dicom_metadata(filepath: str) -> Optional[pydicom.Dataset]:
-        """โหลดเฉพาะ Header เพื่อความรวดเร็วในการ Preview"""
         try:
             return pydicom.dcmread(filepath, stop_before_pixels=True)
         except InvalidDicomError:
@@ -100,7 +97,6 @@ class DICOMProcessor:
 
     @staticmethod
     def read_dicom_full(filepath: str) -> Optional[pydicom.Dataset]:
-        """โหลดไฟล์เต็มรูปแบบ (รวม Pixel Data) เพื่อนำไป Save"""
         try:
             return pydicom.dcmread(filepath)
         except InvalidDicomError:
@@ -121,7 +117,6 @@ class DICOMProcessor:
 
     @staticmethod
     def run_quality_control(filepath: str, expected_subject: str, expected_protocol: str) -> Tuple[bool, str]:
-        """ตรวจสอบคุณภาพไฟล์ว่าสมบูรณ์และถูกต้องก่อนปล่อยผ่าน (QC Check)"""
         try:
             ds = pydicom.dcmread(filepath)
             
@@ -142,16 +137,23 @@ class DICOMScanner:
     def __init__(self, processor: DICOMProcessor):
         self.processor = processor
     
-    def scan_folder(self, folder_path: str) -> Tuple[PatientInfo, Dict[str, SeriesData]]:
+    def scan_folder(self, folder_path: str, progress_callback: Callable[[int, int, str], None] = None) -> Tuple[PatientInfo, Dict[str, SeriesData]]: # pyright: ignore[reportArgumentType]
         patient_info = PatientInfo()
         series_info = {}
         found_patient_info = False
         
         logger.info(f"Scanning folder: {folder_path}")
         
+        total_files = sum(len(files) for _, _, files in os.walk(folder_path))
+        processed_count = 0
+        
         for root, dirs, files in os.walk(folder_path):
             for filename in files:
+                processed_count += 1
                 filepath = os.path.join(root, filename)
+                
+                if progress_callback:
+                    progress_callback(processed_count, total_files, f"Reading: {filename}")
                 
                 if not self.processor.is_valid_dicom_file(filepath):
                     continue
@@ -260,22 +262,27 @@ class DICOMFolderProcessor:
         self.deidentifier = deidentifier
         self.processor = deidentifier.processor
     
-    def process(self, input_folder: str, output_folder: str, subject_id: str, protocol_number: str) -> ProcessResult:
+    def process(self, input_folder: str, output_folder: str, subject_id: str, protocol_number: str, progress_callback: Callable[[int, int, str], None] = None) -> ProcessResult: # pyright: ignore[reportArgumentType]
         result = ProcessResult()
         logger.info(f"Starting de-identification process for {subject_id}")
+        
+        total_files = sum(len(files) for _, _, files in os.walk(input_folder))
+        processed_count = 0
         
         for root, dirs, files in os.walk(input_folder):
             output_dir = self._create_output_dir(root, input_folder, output_folder)
             
             for filename in files:
+                processed_count += 1
                 input_path = os.path.join(root, filename)
                 
-                # กรองไฟล์ขยะเบื้องต้น
+                if progress_callback:
+                    progress_callback(processed_count, total_files, f"Processing: {filename}")
+                
                 if not self.processor.is_valid_dicom_file(input_path):
                     result.skip_count += 1
                     continue
                 
-                # โหลดแค่ Metadata เช็คก่อนว่าต้อง Skip หรือไม่ (เพื่อประหยัดเวลา)
                 meta_dataset = self.processor.read_dicom_metadata(input_path)
                 if not meta_dataset:
                     result.error_count += 1
@@ -287,62 +294,48 @@ class DICOMFolderProcessor:
                     result.skip_count += 1
                     continue
                 
-                # ==========================================
-                # เริ่มระบบ Retry 3 ครั้ง
-                # ==========================================
                 max_retries = 3
                 process_success = False
                 last_error_message = ""
                 
                 for attempt in range(1, max_retries + 1):
                     try:
-                        # MUST read a fresh copy every attempt
                         dataset = self.processor.read_dicom_full(input_path)
                         if not dataset:
                             last_error_message = "Cannot fully read DICOM file"
-                            break # ถ้าไฟล์ต้นฉบับพังแต่แรก ไม่ต้องเสียเวลา Retry
+                            break 
                         
-                        # 1. ทำ De-identification
                         self.deidentifier.deidentify(dataset, subject_id, protocol_number)
                         output_path = os.path.join(output_dir, f"{subject_id}_{filename}")
                         dataset.save_as(output_path)
                         
-                        # 2. ทำ QC
                         is_qc_passed, qc_message = self.processor.run_quality_control(output_path, subject_id, protocol_number)
                         
                         if is_qc_passed:
-                            logger.info(f"Processed and QC Passed: {output_path} (Attempt {attempt})")
                             process_success = True
-                            break # ผ่านแล้ว ออกจากลูป Retry ทันที
+                            break 
                         else:
                             last_error_message = f"QC Failed: {qc_message}"
-                            logger.warning(f"{last_error_message} (Attempt {attempt})")
                             if os.path.exists(output_path):
                                 os.remove(output_path)
                                 
                     except Exception as e:
                         last_error_message = f"Error: {str(e)}"
-                        logger.error(f"Processing failed for {filename} (Attempt {attempt}): {last_error_message}")
                         output_path = os.path.join(output_dir, f"{subject_id}_{filename}")
                         if os.path.exists(output_path):
                             os.remove(output_path)
                 
-                # เช็คผลสรุปหลังจากจบลูป Retry
                 if process_success:
                     result.success_count += 1
                 else:
                     if "Cannot fully read" in last_error_message:
                         result.error_count += 1
                     else:
-                        # เก็บประวัติหากทำ 3 ครั้งแล้วยังพังอยู่
                         result.qc_failed_count += 1
                         result.failed_files_details.append(
                             f"📁 Path: {input_path}\n❌ Reason: {last_error_message}"
                         )
-                        logger.error(f"File failed permanently after {max_retries} attempts: {filename}")
         
-        logger.info(f"Process complete. Success: {result.success_count}, "
-                    f"Skipped: {result.skip_count}, Errors: {result.error_count}, Permanent QC Fails: {result.qc_failed_count}")
         return result
     
     @staticmethod
@@ -355,6 +348,40 @@ class DICOMFolderProcessor:
 # ==========================================
 # 4. UI Classes 
 # ==========================================
+
+class ProgressDialog:
+    def __init__(self, parent, title="กำลังทำงาน..."):
+        self.top = tk.Toplevel(parent)
+        self.top.title(title)
+        self.top.geometry("450x150")
+        self.top.attributes('-topmost', True)
+        self.top.protocol("WM_DELETE_WINDOW", lambda: None) 
+        
+        tk.Label(self.top, text="กรุณารอสักครู่...", font=("Arial", 11, "bold")).pack(pady=(15, 5))
+        
+        self.progress = ttk.Progressbar(self.top, orient=tk.HORIZONTAL, length=380, mode='determinate')
+        self.progress.pack(pady=5)
+        
+        self.lbl_percent = tk.Label(self.top, text="0% (0/0)", font=("Arial", 10, "bold"), fg="blue")
+        self.lbl_percent.pack()
+        
+        self.lbl_status = tk.Label(self.top, text="Initializing...", font=("Arial", 9), fg="gray")
+        self.lbl_status.pack(pady=(5, 10))
+        
+        self.top.update()
+
+    def update_progress(self, current: int, total: int, message: str):
+        percent = int((current / total) * 100) if total > 0 else 0
+        self.progress['value'] = percent
+        self.lbl_percent.config(text=f"{percent}%  ({current} / {total} files)")
+        
+        display_msg = message if len(message) < 55 else message[:52] + "..."
+        self.lbl_status.config(text=display_msg)
+        self.top.update()
+        
+    def close(self):
+        self.top.destroy()
+
 
 class BaseDialog:
     def __init__(self, parent, title: str, geometry: str = "600x400"):
@@ -464,6 +491,54 @@ class DataEntryDialog(BaseDialog):
         self.make_modal()
         parent.wait_window(self.top)
     
+    def _load_study_formats(self) -> list:
+        """ฟังก์ชันสำหรับดึงข้อมูล Format จากไฟล์ CSV"""
+        filepath = CONFIG.FORMATS_FILE
+        # ข้อมูลตั้งต้นในกรณีที่ยังไม่มีไฟล์
+        default_formats = [
+            ("20210033", "Study number 3 หลัก ('933') + Site number 5 หลัก ('62001') + participant number 3 หลัก (93362001XXX)"),
+            ("OP-1250-301", "6606-6XXX"),
+            ("OP-1250-302", "6606-7XXX"),
+            ("BNT327-06", "Site number + participant number (764-01-XXXX)"),
+            ("BO43249", "XXXXX"),
+            ("CT-P51 3.1", "Site number + participant number (5602XXXX)"),
+            ("MB12-C-02-24", "Site number + participant number (XXXXXXXXX)"),
+            ("MK-2400-001", "Site 4 หลัก (0887)+ Screening 5 หลัก (0887-YYYYY) หรือ Randomization 6 หลัก"),
+            ("MK-1022-016", "Site 4 หลัก (2924)+ Screening 5 หลัก (2924-YYYYY) หรือ Randomization 6 หลัก"),
+            ("MK-2870-009", "Site 4 หลัก (4006)+ Screening 5 หลัก (4006-YYYYY) หรือ Randomization 6 หลัก"),
+            ("MK-2870-023", "Site 4 หลัก (2300)+ Screening 5 หลัก (2300-YYYYY) หรือ Randomization 6 หลัก"),
+            ("V940-011", "Site number 4 หลัก + Screening number 5 หลัก (3002-YYYYY)"),
+            ("MO41552", "Site number + participant number (501243-XXXX)"),
+            ("TAS-6417-301", "Site number + participant number (800-XXX)"),
+        ]
+        
+        # ถ้าไม่มีไฟล์ ให้สร้างไฟล์ใหม่ขึ้นมาและใส่ Default ลงไป
+        if not os.path.exists(filepath):
+            try:
+                # ใช้ utf-8-sig เพื่อให้เปิดใน Excel แล้วภาษาไทยไม่เพี้ยน
+                with open(filepath, mode='w', encoding='utf-8-sig', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["StudyName", "Format"])
+                    writer.writerows(default_formats)
+            except Exception as e:
+                logger.error(f"Cannot create default study_formats.csv: {e}")
+            return default_formats
+
+        # ถ้ามีไฟล์อยู่แล้ว ให้อ่านจากไฟล์ขึ้นมาแสดง
+        formats = []
+        try:
+            with open(filepath, mode='r', encoding='utf-8-sig') as f:
+                reader = csv.reader(f)
+                next(reader, None)  # ข้าม Header
+                for row in reader:
+                    if len(row) >= 2:
+                        formats.append((row[0].strip(), row[1].strip()))
+        except Exception as e:
+            logger.error(f"Error reading {filepath}: {e}")
+            return default_formats
+            
+        return formats
+
     def _build_ui(self):
         tk.Label(self.top, text="คู่มือรูปแบบการกำหนดรหัส", font=('Arial', 11, 'bold')).pack(pady=10)
         self._create_study_table()
@@ -481,22 +556,8 @@ class DataEntryDialog(BaseDialog):
         self.tree.column("StudyName", width=150, anchor=tk.W)
         self.tree.column("Format", width=650, anchor=tk.W)
         
-        study_formats = [
-            ("20210033", "Study number 3 หลัก ('933') + Site number 5 หลัก ('62001') + participant number 3 หลัก (93362001XXX)"),
-            ("OP-1250-301", "6606-6XXX"),
-            ("OP-1250-302", "6606-7XXX"),
-            ("BNT327-06", "Site number + participant number (764-01-XXXX)"),
-            ("BO43249", "XXXXX"),
-            ("CT-P51 3.1", "Site number + participant number (5602XXXX)"),
-            ("MB12-C-02-24", "Site number + participant number (XXXXXXXXX)"),
-            ("MK-2400-001", "Site 4 หลัก (0887)+ Screening 5 หลัก (0887-YYYYY) หรือ Randomization 6 หลัก"),
-            ("MK-1022-016", "Site 4 หลัก (2924)+ Screening 5 หลัก (2924-YYYYY) หรือ Randomization 6 หลัก"),
-            ("MK-2870-009", "Site 4 หลัก (4006)+ Screening 5 หลัก (4006-YYYYY) หรือ Randomization 6 หลัก"),
-            ("MK-2870-023", "Site 4 หลัก (2300)+ Screening 5 หลัก (2300-YYYYY) หรือ Randomization 6 หลัก"),
-            ("V940-011", "Site number 4 หลัก + Screening number 5 หลัก (3002-YYYYY)"),
-            ("MO41552", "Site number + participant number (501243-XXXX)"),
-            ("TAS-6417-301", "Site number + participant number (800-XXX)"),
-        ]
+        # ดึงข้อมูลผ่านฟังก์ชันที่เขียนไว้
+        study_formats = self._load_study_formats()
         
         for item in study_formats:
             self.tree.insert("", tk.END, values=item)
@@ -599,7 +660,6 @@ class FinalResultDialog(BaseDialog):
         stats_text = f"แปลงผ่าน QC สำเร็จ: {self.result.success_count} | ข้าม Report & Series: {self.result.skip_count}\nพบข้อผิดพลาด/ไฟล์เสีย: {self.result.error_count} | ไม่ผ่าน QC (ลบทิ้ง): {self.result.qc_failed_count}"
         tk.Label(header_frame, text=stats_text, font=("Arial", 11), bg="#E8F5E9").pack(pady=5)
         
-        # เพิ่มปุ่มกดดูรายละเอียดหากมีไฟล์ที่ QC ล้มเหลวถาวร
         if self.result.qc_failed_count > 0:
             tk.Button(header_frame, text="⚠️ ดูรายละเอียดไฟล์ที่ไม่ผ่าน QC", 
                       command=self.show_failed_files, 
@@ -648,15 +708,14 @@ class FinalResultDialog(BaseDialog):
         tk.Button(self.top, text="Finish (เสร็จสิ้น)", command=self.top.destroy, width=20, bg="#4CAF50", fg="white", font=('Arial', 11, 'bold')).pack(pady=20)
 
     def show_failed_files(self):
-        """เปิดหน้าต่างใหม่เพื่อแสดงรายละเอียดไฟล์ที่ทำ 3 ครั้งแล้วไม่ผ่าน"""
         fail_window = tk.Toplevel(self.top)
         fail_window.title("รายละเอียดไฟล์ที่ไม่ผ่าน QC (Failed Files Details)")
         fail_window.geometry("700x400")
         fail_window.attributes('-topmost', True)
         
         tk.Label(fail_window, text=f"รายการไฟล์ที่ไม่ผ่านการ QC ทั้ง {len(self.result.failed_files_details)} ไฟล์", 
-                    font=('Arial', 11, 'bold'), fg="red").pack(pady=10)
-
+                 font=('Arial', 11, 'bold'), fg="red").pack(pady=10)
+                 
         text_area = tk.Text(fail_window, font=('Courier', 9), bg="#FFF3E0", padx=10, pady=10)
         text_area.pack(fill=tk.BOTH, expand=True, padx=15, pady=5)
         
@@ -671,7 +730,7 @@ class FinalResultDialog(BaseDialog):
         text_area.config(state=tk.DISABLED)
         
         tk.Button(fail_window, text="ปิดหน้าต่าง", command=fail_window.destroy, 
-                    width=15, bg="#9E9E9E", fg="white").pack(pady=10)
+                  width=15, bg="#9E9E9E", fg="white").pack(pady=10)
 
 
 # ==========================================
@@ -701,11 +760,11 @@ class DICOMDeIDApplication:
             input_dir = filedialog.askdirectory(title="Step 1: Select DICOM folder")
             
             if not input_dir:
-                logger.info("User cancelled folder selection")
                 break
             
-            logger.info(f"Selected folder: {input_dir}")
-            patient_info, series_info = self.scanner.scan_folder(input_dir)
+            scan_prog = ProgressDialog(self.root, title="กำลังสแกนข้อมูล DICOM ต้นฉบับ...")
+            patient_info, series_info = self.scanner.scan_folder(input_dir, progress_callback=scan_prog.update_progress)
+            scan_prog.close()
             
             if not self._process_workflow(input_dir, patient_info, series_info):
                 break
@@ -730,8 +789,9 @@ class DICOMDeIDApplication:
                                     subject_id: str, protocol_number: str) -> bool:
         output_dir = f"{input_dir}_DeID_{subject_id}"
         
-        logger.info(f"Starting de-identification for subject: {subject_id}")
-        result = self.folder_processor.process(input_dir, output_dir, subject_id, protocol_number)
+        process_prog = ProgressDialog(self.root, title="กำลังทำ De-identification (อย่าปิดโปรแกรม)...")
+        result = self.folder_processor.process(input_dir, output_dir, subject_id, protocol_number, progress_callback=process_prog.update_progress)
+        process_prog.close() 
         
         FinalResultDialog(self.root, result, output_dir, patient_info, subject_id, protocol_number)
         
