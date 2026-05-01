@@ -35,7 +35,11 @@ class DeIDConfig:
     """Configuration for de-identification process"""
     DICOM_EXTENSIONS = {'.dcm', '.DCM'}
     SKIP_EXTENSIONS = {'.txt', '.pdf', '.docx', '.jpg', '.png'}
-    TAGS_TO_CLEAR = ['InstitutionAddress', 'PerformingPhysicianName', 'PatientAge', 'PatientSex']
+    TAGS_TO_CLEAR = ['InstitutionAddress', 
+                    'PerformingPhysicianName',
+                    'PatientAge', 
+                    # 'PatientSex'
+                    ]
     TAGS_TO_REMOVE_RANGES = [(0x5000, 0x50FF), (0x6000, 0x60FF)]
     SERIES_TO_SKIP = {'99999'}
     SECONDARY_CAPTURE_UID = '1.2.840.10008.5.1.4.1.1.7'
@@ -338,7 +342,7 @@ class DICOMFolderProcessor:
                         logger.error(f"File failed permanently after {max_retries} attempts: {filename}")
         
         logger.info(f"Process complete. Success: {result.success_count}, "
-                   f"Skipped: {result.skip_count}, Errors: {result.error_count}, Permanent QC Fails: {result.qc_failed_count}")
+                    f"Skipped: {result.skip_count}, Errors: {result.error_count}, Permanent QC Fails: {result.qc_failed_count}")
         return result
     
     @staticmethod
@@ -485,13 +489,13 @@ class DataEntryDialog(BaseDialog):
             ("BO43249", "XXXXX"),
             ("CT-P51 3.1", "Site number + participant number (5602XXXX)"),
             ("MB12-C-02-24", "Site number + participant number (XXXXXXXXX)"),
-            ("MK-2400-001", "Site 4 หลัก (0887)+ Screening 5 หลัก (XXXX-YYYYY) หรือ Randomization 6 หลัก"),
-            ("MK-1022-016", "Site 4 หลัก (2924)+ Screening 5 หลัก (XXXX-YYYYY) หรือ Randomization 6 หลัก"),
-            ("MK-2870-009", "Site 4 หลัก (4006)+ Screening 5 หลัก (XXXX-YYYYY) หรือ Randomization 6 หลัก"),
-            ("MK-2870-023", "Site 4 หลัก (2300)+ Screening 5 หลัก (XXXX-YYYYY) หรือ Randomization 6 หลัก"),
+            ("MK-2400-001", "Site 4 หลัก (0887)+ Screening 5 หลัก (0887-YYYYY) หรือ Randomization 6 หลัก"),
+            ("MK-1022-016", "Site 4 หลัก (2924)+ Screening 5 หลัก (2924-YYYYY) หรือ Randomization 6 หลัก"),
+            ("MK-2870-009", "Site 4 หลัก (4006)+ Screening 5 หลัก (4006-YYYYY) หรือ Randomization 6 หลัก"),
+            ("MK-2870-023", "Site 4 หลัก (2300)+ Screening 5 หลัก (2300-YYYYY) หรือ Randomization 6 หลัก"),
+            ("V940-011", "Site number 4 หลัก + Screening number 5 หลัก (3002-YYYYY)"),
             ("MO41552", "Site number + participant number (501243-XXXX)"),
             ("TAS-6417-301", "Site number + participant number (800-XXX)"),
-            ("V940-011", "Site number 4 หลัก + Screening number 5 หลัก (XXXX-YYYYY)")
         ]
         
         for item in study_formats:
@@ -651,8 +655,8 @@ class FinalResultDialog(BaseDialog):
         fail_window.attributes('-topmost', True)
         
         tk.Label(fail_window, text=f"รายการไฟล์ที่ไม่ผ่านการ QC ทั้ง {len(self.result.failed_files_details)} ไฟล์", 
-                 font=('Arial', 11, 'bold'), fg="red").pack(pady=10)
-                 
+                    font=('Arial', 11, 'bold'), fg="red").pack(pady=10)
+
         text_area = tk.Text(fail_window, font=('Courier', 9), bg="#FFF3E0", padx=10, pady=10)
         text_area.pack(fill=tk.BOTH, expand=True, padx=15, pady=5)
         
@@ -667,7 +671,7 @@ class FinalResultDialog(BaseDialog):
         text_area.config(state=tk.DISABLED)
         
         tk.Button(fail_window, text="ปิดหน้าต่าง", command=fail_window.destroy, 
-                  width=15, bg="#9E9E9E", fg="white").pack(pady=10)
+                    width=15, bg="#9E9E9E", fg="white").pack(pady=10)
 
 
 # ==========================================
@@ -718,7 +722,7 @@ class DICOMDeIDApplication:
             if entry.action == 'back':
                 continue
             elif entry.action == 'ok':
-                return self._execute_deidentification(input_dir, patient_info, entry.subject_id, entry.protocol_number)
+                return self._execute_deidentification(input_dir, patient_info, entry.subject_id, entry.protocol_number) # pyright: ignore[reportArgumentType]
             else:
                 return False
     
