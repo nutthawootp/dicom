@@ -4,21 +4,11 @@ import logging
 from pathlib import Path
 from typing import Dict, Tuple, Optional, List, Callable
 from dataclasses import dataclass, field
-from enum import Enum
 import pydicom
 from pydicom.errors import InvalidDicomError
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from tkinter import ttk
-
-# ==========================================
-# 1. Configuration & Constants
-# ==========================================
-class LogLevel(Enum):
-    DEBUG = logging.DEBUG
-    INFO = logging.INFO
-    WARNING = logging.WARNING
-    ERROR = logging.ERROR
 
 # Setup logging
 logging.basicConfig(
@@ -36,28 +26,37 @@ class DeIDConfig:
     """Configuration for de-identification process"""
     DICOM_EXTENSIONS = {'.dcm', '.DCM'}
     SKIP_EXTENSIONS = {'.txt', '.pdf', '.docx', '.jpg', '.png'}
-    TAGS_TO_CLEAR = ['InstitutionAddress', 'PerformingPhysicianName', 'PatientAge', 'PatientSex']
+    # ย้าย PatientAge ออกไปประมวลผลแบบไดนามิกผ่าน Checkbox ด้านล่างแทน
+    TAGS_TO_CLEAR = ['InstitutionAddress', 'PerformingPhysicianName']
     TAGS_TO_REMOVE_RANGES = [(0x5000, 0x50FF), (0x6000, 0x60FF)]
     SERIES_TO_SKIP = {'99999'}
     SECONDARY_CAPTURE_UID = '1.2.840.10008.5.1.4.1.1.7'
-    FORMATS_FILE = 'study_formats.csv'  # เพิ่มชื่อไฟล์สำหรับเก็บ Format คู่มือ
+    FORMATS_FILE = 'study_formats.csv'
 
 CONFIG = DeIDConfig()
 
-# ==========================================
-# 2. Data Models
-# ==========================================
+# Palette สีสไตล์ Modern Medical Terminal
+COLOR_PRIMARY = "#1E293B"    # Slate Navy
+COLOR_SECONDARY = "#0F766E"  # Medical Teal
+COLOR_BG_LIGHT = "#F8FAFC"   # Off White
+COLOR_CARD_BG = "#FFFFFF"    # White
+COLOR_SUCCESS = "#10B981"    # Soft Green
+COLOR_DANGER = "#EF4444"     # Soft Red
+COLOR_BORDER = "#E2E8F0"     # Light Gray
+COLOR_TEXT_DARK = "#0F172A"  # Very Dark Blue
+
 @dataclass
 class PatientInfo:
-    PatientName: str = 'Not Found / Empty'
-    PatientID: str = 'Not Found / Empty'
-    PatientBirthDate: str = 'Not Found / Empty'
-    PatientSex: str = 'Not Found / Empty'
-    PatientAge: str = 'Not Found / Empty'
-    ReferringPhysicianName: str = 'Not Found / Empty'
-    PerformingPhysicianName: str = 'Not Found / Empty'
-    InstitutionName: str = 'Not Found / Empty'
-    InstitutionAddress: str = 'Not Found / Empty'
+    PatientName: str = 'ไม่พบข้อมูล / ว่างเปล่า'
+    PatientID: str = 'ไม่พบข้อมูล / ว่างเปล่า'
+    PatientBirthDate: str = 'ไม่พบข้อมูล / ว่างเปล่า'
+    PatientSex: str = 'ไม่พบข้อมูล / ว่างเปล่า'
+    PatientAge: str = 'ไม่พบข้อมูล / ว่างเปล่า'
+    StudyDate: str = 'ไม่พบข้อมูล / ว่างเปล่า'
+    ReferringPhysicianName: str = 'ไม่พบข้อมูล / ว่างเปล่า'
+    PerformingPhysicianName: str = 'ไม่พบข้อมูล / ว่างเปล่า'
+    InstitutionName: str = 'ไม่พบข้อมูล / ว่างเปล่า'
+    InstitutionAddress: str = 'ไม่พบข้อมูล / ว่างเปล่า'
 
 @dataclass
 class SeriesData:
@@ -73,9 +72,6 @@ class ProcessResult:
     qc_failed_count: int = 0 
     failed_files_details: List[str] = field(default_factory=list)
 
-# ==========================================
-# 3. DICOM Processing Service
-# ==========================================
 class DICOMProcessor:
     @staticmethod
     def is_valid_dicom_file(filepath: str) -> bool:
@@ -89,7 +85,6 @@ class DICOMProcessor:
         try:
             return pydicom.dcmread(filepath, stop_before_pixels=True)
         except InvalidDicomError:
-            logger.error(f"Invalid DICOM file: {filepath}")
             return None
         except Exception as e:
             logger.error(f"Error reading {filepath}: {str(e)}")
@@ -100,7 +95,6 @@ class DICOMProcessor:
         try:
             return pydicom.dcmread(filepath)
         except InvalidDicomError:
-            logger.error(f"Invalid DICOM file: {filepath}")
             return None
         except Exception as e:
             logger.error(f"Error reading {filepath}: {str(e)}")
@@ -111,49 +105,42 @@ class DICOMProcessor:
         try:
             value = getattr(dataset, attr, default)
             return str(value) if value else default
-        except Exception as e:
-            logger.debug(f"Could not retrieve {attr}: {e}")
+        except Exception as e:  # noqa: F841
             return default
 
     @staticmethod
     def run_quality_control(filepath: str, expected_subject: str, expected_protocol: str) -> Tuple[bool, str]:
         try:
             ds = pydicom.dcmread(filepath)
-            
             if 'PixelData' not in ds:
-                return False, "Missing Pixel Data (7FE0,0010)"
-                
+                return False, "ไม่พบข้อมูล Pixel Data (7FE0,0010)"
             if str(getattr(ds, 'PatientName', '')) != expected_subject:
-                return False, "Patient Name was not properly replaced"
-                
+                return False, "ค่า Patient Name ไม่ได้รับการแก้ไขอย่างถูกต้อง"
             if str(getattr(ds, 'PatientID', '')) != expected_protocol:
-                return False, "Patient ID was not properly replaced"
-                
-            return True, "QC Passed"
+                return False, "ค่า Patient ID ไม่ได้รับการแก้ไขอย่างถูกต้อง"
+            return True, "ผ่านการตรวจสอบ QC"
         except Exception as e:
-            return False, f"File corrupted after save ({str(e)})"
+            return False, f"ไฟล์เสียหายหลังจากบันทึก ({str(e)})"
 
 class DICOMScanner:
     def __init__(self, processor: DICOMProcessor):
         self.processor = processor
     
-    def scan_folder(self, folder_path: str, progress_callback: Callable[[int, int, str], None] = None) -> Tuple[PatientInfo, Dict[str, SeriesData]]: # pyright: ignore[reportArgumentType]
+    def scan_folder(self, folder_path: str, progress_callback: Optional[Callable[[int, int, str], None]] = None) -> Tuple[PatientInfo, Dict[str, SeriesData]]:
         patient_info = PatientInfo()
         series_info = {}
         found_patient_info = False
         
-        logger.info(f"Scanning folder: {folder_path}")
-        
         total_files = sum(len(files) for _, _, files in os.walk(folder_path))
         processed_count = 0
         
-        for root, dirs, files in os.walk(folder_path):
+        for root, _, files in os.walk(folder_path):
             for filename in files:
                 processed_count += 1
                 filepath = os.path.join(root, filename)
                 
                 if progress_callback:
-                    progress_callback(processed_count, total_files, f"Reading: {filename}")
+                    progress_callback(processed_count, total_files, f"กำลังอ่านไฟล์: {filename}")
                 
                 if not self.processor.is_valid_dicom_file(filepath):
                     continue
@@ -168,31 +155,27 @@ class DICOMScanner:
                 
                 self._extract_series_info(dataset, series_info)
         
-        logger.info(f"Scan complete. Found {len(series_info)} series")
         return patient_info, series_info
     
-    @staticmethod
-    def _extract_patient_info(dataset: pydicom.Dataset) -> PatientInfo:
-        processor = DICOMProcessor()
+    def _extract_patient_info(self, dataset: pydicom.Dataset) -> PatientInfo:
         return PatientInfo(
-            PatientName=processor.get_attribute_safe(dataset, 'PatientName', 'Not Found / Empty'),
-            PatientID=processor.get_attribute_safe(dataset, 'PatientID', 'Not Found / Empty'),
-            PatientBirthDate=processor.get_attribute_safe(dataset, 'PatientBirthDate', 'Not Found / Empty'),
-            PatientSex=processor.get_attribute_safe(dataset, 'PatientSex', 'Not Found / Empty'),
-            PatientAge=processor.get_attribute_safe(dataset, 'PatientAge', 'Not Found / Empty'),
-            ReferringPhysicianName=processor.get_attribute_safe(dataset, 'ReferringPhysicianName', 'Not Found / Empty'),
-            PerformingPhysicianName=processor.get_attribute_safe(dataset, 'PerformingPhysicianName', 'Not Found / Empty'),
-            InstitutionName=processor.get_attribute_safe(dataset, 'InstitutionName', 'Not Found / Empty'),
-            InstitutionAddress=processor.get_attribute_safe(dataset, 'InstitutionAddress', 'Not Found / Empty')
+            PatientName=self.processor.get_attribute_safe(dataset, 'PatientName', 'ไม่พบข้อมูล / ว่างเปล่า'),
+            PatientID=self.processor.get_attribute_safe(dataset, 'PatientID', 'ไม่พบข้อมูล / ว่างเปล่า'),
+            PatientBirthDate=self.processor.get_attribute_safe(dataset, 'PatientBirthDate', 'ไม่พบข้อมูล / ว่างเปล่า'),
+            PatientSex=self.processor.get_attribute_safe(dataset, 'PatientSex', 'ไม่พบข้อมูล / ว่างเปล่า'),
+            PatientAge=self.processor.get_attribute_safe(dataset, 'PatientAge', 'ไม่พบข้อมูล / ว่างเปล่า'),
+            StudyDate=self.processor.get_attribute_safe(dataset, 'StudyDate', 'ไม่พบข้อมูล / ว่างเปล่า'),
+            ReferringPhysicianName=self.processor.get_attribute_safe(dataset, 'ReferringPhysicianName', 'ไม่พบข้อมูล / ว่างเปล่า'),
+            PerformingPhysicianName=self.processor.get_attribute_safe(dataset, 'PerformingPhysicianName', 'ไม่พบข้อมูล / ว่างเปล่า'),
+            InstitutionName=self.processor.get_attribute_safe(dataset, 'InstitutionName', 'ไม่พบข้อมูล / ว่างเปล่า'),
+            InstitutionAddress=self.processor.get_attribute_safe(dataset, 'InstitutionAddress', 'ไม่พบข้อมูล / ว่างเปล่า')
         )
     
-    @staticmethod
-    def _extract_series_info(dataset: pydicom.Dataset, series_info: Dict):
-        processor = DICOMProcessor()
-        s_num = processor.get_attribute_safe(dataset, 'SeriesNumber', 'Unknown')
-        s_desc = processor.get_attribute_safe(dataset, 'SeriesDescription', 'No Description')
-        spacing = processor.get_attribute_safe(dataset, 'SpacingBetweenSlices', 'Not Found')
-        thickness = processor.get_attribute_safe(dataset, 'SliceThickness', 'Not Found')
+    def _extract_series_info(self, dataset: pydicom.Dataset, series_info: Dict):
+        s_num = self.processor.get_attribute_safe(dataset, 'SeriesNumber', 'Unknown')
+        s_desc = self.processor.get_attribute_safe(dataset, 'SeriesDescription', 'ไม่มีรายละเอียด (No Description)')
+        spacing = self.processor.get_attribute_safe(dataset, 'SpacingBetweenSlices', 'ไม่ระบุ')
+        thickness = self.processor.get_attribute_safe(dataset, 'SliceThickness', 'ไม่ระบุ')
         
         if s_num not in series_info:
             series_info[s_num] = SeriesData(s_desc, set(), set())
@@ -211,14 +194,20 @@ class DICOMDeIdentifier:
         
         series_num = self.processor.get_attribute_safe(dataset, 'SeriesNumber', '')
         if series_num in CONFIG.SERIES_TO_SKIP:
-            return f"Series {series_num}"
+            return f"ข้าม Series {series_num}"
         
         return None
     
-    def deidentify(self, dataset: pydicom.Dataset, subject_id: str, protocol_number: str) -> None:
+    def deidentify(self, dataset: pydicom.Dataset, subject_id: str, protocol_number: str, clear_sex: bool = True, clear_age: bool = True) -> None:
         for tag in CONFIG.TAGS_TO_CLEAR:
             if tag in dataset:
                 dataset[tag].value = ''
+        
+        # จัดการฟิลด์ อายุ และ เพศ แบบเงื่อนไขไดนามิกตามความต้องการของผู้ใช้
+        if clear_age and 'PatientAge' in dataset:
+            dataset.PatientAge = ''
+        if clear_sex and 'PatientSex' in dataset:
+            dataset.PatientSex = ''
         
         dataset.PatientName = subject_id
         dataset.PatientID = protocol_number
@@ -262,14 +251,12 @@ class DICOMFolderProcessor:
         self.deidentifier = deidentifier
         self.processor = deidentifier.processor
     
-    def process(self, input_folder: str, output_folder: str, subject_id: str, protocol_number: str, progress_callback: Callable[[int, int, str], None] = None) -> ProcessResult: # pyright: ignore[reportArgumentType]
+    def process(self, input_folder: str, output_folder: str, subject_id: str, protocol_number: str, clear_sex: bool = True, clear_age: bool = True, progress_callback: Optional[Callable[[int, int, str], None]] = None) -> ProcessResult:
         result = ProcessResult()
-        logger.info(f"Starting de-identification process for {subject_id}")
-        
         total_files = sum(len(files) for _, _, files in os.walk(input_folder))
         processed_count = 0
         
-        for root, dirs, files in os.walk(input_folder):
+        for root, _, files in os.walk(input_folder):
             output_dir = self._create_output_dir(root, input_folder, output_folder)
             
             for filename in files:
@@ -277,7 +264,7 @@ class DICOMFolderProcessor:
                 input_path = os.path.join(root, filename)
                 
                 if progress_callback:
-                    progress_callback(processed_count, total_files, f"Processing: {filename}")
+                    progress_callback(processed_count, total_files, f"กำลังประมวลผล: {filename}")
                 
                 if not self.processor.is_valid_dicom_file(input_path):
                     result.skip_count += 1
@@ -290,51 +277,43 @@ class DICOMFolderProcessor:
                 
                 skip_reason = self.deidentifier.should_skip_file(meta_dataset)
                 if skip_reason:
-                    logger.info(f"Skipped {filename}: {skip_reason}")
                     result.skip_count += 1
                     continue
                 
-                max_retries = 3
                 process_success = False
                 last_error_message = ""
                 
-                for attempt in range(1, max_retries + 1):
-                    try:
-                        dataset = self.processor.read_dicom_full(input_path)
-                        if not dataset:
-                            last_error_message = "Cannot fully read DICOM file"
-                            break 
-                        
-                        self.deidentifier.deidentify(dataset, subject_id, protocol_number)
+                try:
+                    dataset = self.processor.read_dicom_full(input_path)
+                    if not dataset:
+                        last_error_message = "ไม่สามารถอ่านโครงสร้างไฟล์ DICOM เต็มรูปแบบได้"
+                    else:
+                        # ส่งผ่านตัวแปรทางเลือกการลบไปยัง De-Identifier Core
+                        self.deidentifier.deidentify(dataset, subject_id, protocol_number, clear_sex, clear_age)
                         output_path = os.path.join(output_dir, f"{subject_id}_{filename}")
                         dataset.save_as(output_path)
                         
                         is_qc_passed, qc_message = self.processor.run_quality_control(output_path, subject_id, protocol_number)
-                        
                         if is_qc_passed:
                             process_success = True
-                            break 
                         else:
                             last_error_message = f"QC Failed: {qc_message}"
                             if os.path.exists(output_path):
                                 os.remove(output_path)
-                                
-                    except Exception as e:
-                        last_error_message = f"Error: {str(e)}"
-                        output_path = os.path.join(output_dir, f"{subject_id}_{filename}")
-                        if os.path.exists(output_path):
-                            os.remove(output_path)
+                except Exception as e:
+                    last_error_message = f"ข้อผิดพลาด: {str(e)}"
+                    output_path = os.path.join(output_dir, f"{subject_id}_{filename}")
+                    if os.path.exists(output_path):
+                        os.remove(output_path)
                 
                 if process_success:
                     result.success_count += 1
                 else:
-                    if "Cannot fully read" in last_error_message:
+                    if "ไม่สามารถอ่านโครงสร้าง" in last_error_message:
                         result.error_count += 1
                     else:
                         result.qc_failed_count += 1
-                        result.failed_files_details.append(
-                            f"📁 Path: {input_path}\n❌ Reason: {last_error_message}"
-                        )
+                        result.failed_files_details.append(f"📁 Path: {input_path}\n❌ สาเหตุ: {last_error_message}")
         
         return result
     
@@ -346,458 +325,545 @@ class DICOMFolderProcessor:
         return output_dir
 
 # ==========================================
-# 4. UI Classes 
+# UI Engine: Single-Window Modern Layout
 # ==========================================
+class ModernDICOMDeIDApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("DICOM Client De-identification Workspace")
+        self.root.geometry("1100x750")
+        self.root.minsize(1050, 700)
+        self.root.configure(bg=COLOR_BG_LIGHT)
+        
+        self.processor = DICOMProcessor()
+        self.scanner = DICOMScanner(self.processor)
+        self.deidentifier = DICOMDeIdentifier(self.processor)
+        self.folder_processor = DICOMFolderProcessor(self.deidentifier)
+        
+        self.input_dir = ""
+        self.output_dir = ""
+        self.patient_info = PatientInfo()
+        self.series_info = {}
+        
+        # กำหนดตัวแปรสำหรับเก็บบริบทการกดเลือก Checkbox ลบ เพศ/อายุ (Default = True)
+        self.var_clear_age = tk.BooleanVar(value=True)
+        self.var_clear_sex = tk.BooleanVar(value=True)
+        
+        self._init_styles()
+        self._build_main_layout()
+        self.show_step(1)
 
-class ProgressDialog:
-    def __init__(self, parent, title="กำลังทำงาน..."):
-        self.top = tk.Toplevel(parent)
-        self.top.title(title)
-        self.top.geometry("450x150")
-        self.top.attributes('-topmost', True)
-        self.top.protocol("WM_DELETE_WINDOW", lambda: None) 
+    def _init_styles(self):
+        style = ttk.Style()
+        style.theme_use('clam')
         
-        tk.Label(self.top, text="กรุณารอสักครู่...", font=("Arial", 11, "bold")).pack(pady=(15, 5))
-        
-        self.progress = ttk.Progressbar(self.top, orient=tk.HORIZONTAL, length=380, mode='determinate')
-        self.progress.pack(pady=5)
-        
-        self.lbl_percent = tk.Label(self.top, text="0% (0/0)", font=("Arial", 10, "bold"), fg="blue")
-        self.lbl_percent.pack()
-        
-        self.lbl_status = tk.Label(self.top, text="Initializing...", font=("Arial", 9), fg="gray")
-        self.lbl_status.pack(pady=(5, 10))
-        
-        self.top.update()
+        style.configure("Treeview", 
+                        background=COLOR_CARD_BG, 
+                        foreground=COLOR_TEXT_DARK, 
+                        rowheight=26, 
+                        fieldbackground=COLOR_CARD_BG,
+                        font=("Segoe UI", 9))
+        style.configure("Treeview.Heading", 
+                        background=COLOR_BORDER, 
+                        foreground=COLOR_TEXT_DARK, 
+                        font=("Segoe UI", 10, "bold"),
+                        borderwidth=1)
+        style.map("Treeview.Heading", background=[('active', '#CBD5E1')])
+        style.map("Treeview", background=[('selected', "#0f766e")])
 
-    def update_progress(self, current: int, total: int, message: str):
-        percent = int((current / total) * 100) if total > 0 else 0
-        self.progress['value'] = percent
-        self.lbl_percent.config(text=f"{percent}%  ({current} / {total} files)")
+    def _build_main_layout(self):
+        self.sidebar = tk.Frame(self.root, bg=COLOR_PRIMARY, width=220)
+        self.sidebar.pack(side=tk.LEFT, fill=tk.Y)
+        self.sidebar.pack_propagate(False)
         
-        display_msg = message if len(message) < 55 else message[:52] + "..."
-        self.lbl_status.config(text=display_msg)
-        self.top.update()
+        lbl_app_title = tk.Label(self.sidebar, text="DICOM DeID\nWorkspace", fg="white", bg=COLOR_PRIMARY, 
+                                font=("Segoe UI", 15, "bold"), pady=20)
+        lbl_app_title.pack(fill=tk.X)
         
-    def close(self):
-        self.top.destroy()
+        self.steps_indicators = []
+        steps_text = ["1. คัดกรองข้อมูลต้นฉบับ", "2. กำหนดและประเมินรหัส", "3. ดำเนินการและประเมินผล"]
+        for i, text in enumerate(steps_text, 1):
+            frame_ind = tk.Frame(self.sidebar, bg=COLOR_PRIMARY, pady=12, padx=15)
+            frame_ind.pack(fill=tk.X)
+            lbl_num = tk.Label(frame_ind, text=f" {i} ", fg=COLOR_PRIMARY, bg="white", font=("Segoe UI", 9, "bold"), width=3)
+            lbl_num.pack(side=tk.LEFT, padx=(0, 10))
+            lbl_txt = tk.Label(frame_ind, text=text, fg="#94A3B8", bg=COLOR_PRIMARY, font=("Segoe UI", 10, "bold"))
+            lbl_txt.pack(side=tk.LEFT)
+            self.steps_indicators.append((frame_ind, lbl_num, lbl_txt))
 
+        self.workstage = tk.Frame(self.root, bg=COLOR_BG_LIGHT)
+        self.workstage.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=25, pady=20)
+        
+        self.footer = tk.Frame(self.root, bg=COLOR_BG_LIGHT, height=60, bd=1, relief=tk.FLAT)
+        self.footer.pack(side=tk.BOTTOM, fill=tk.X, padx=25, pady=(0, 20))
+        
+        self.btn_back = tk.Button(self.footer, text="⬅ ย้อนกลับ", command=self.on_back, bg="#F1F5F9", fg=COLOR_TEXT_DARK, 
+                                font=("Segoe UI", 10, "bold"), padx=20, borderwidth=0, activebackground="#E2E8F0")
+        self.btn_back.pack(side=tk.LEFT)
+        
+        self.btn_next = tk.Button(self.footer, text="ขั้นตอนถัดไป ➔", command=self.on_next, bg=COLOR_SECONDARY, fg="white", 
+                                font=("Segoe UI", 10, "bold"), padx=20, borderwidth=0, activebackground="#0D9488")
+        self.btn_next.pack(side=tk.RIGHT)
 
-class BaseDialog:
-    def __init__(self, parent, title: str, geometry: str = "600x400"):
-        self.top = tk.Toplevel(parent)
-        self.top.title(title)
-        self.top.geometry(geometry)
-        self.top.attributes('-topmost', True)
-        self.top.focus_force()
-        self.action = None
-    
-    def make_modal(self):
-        self.top.grab_set()
-        self.top.transient()
+        self.stage_frames = {}
+        self._build_stage1()
+        self._build_stage2()
+        self._build_stage3()
 
-class DataPreviewDialog(BaseDialog):
-    def __init__(self, parent, patient_info: PatientInfo, series_info: Dict[str, SeriesData]):
-        super().__init__(parent, "ตรวจสอบข้อมูล DICOM ต้นฉบับ", "600x680")
-        self.patient_info = patient_info
-        self.series_info = series_info
-        self._build_ui()
-        self.make_modal()
-        parent.wait_window(self.top)
-    
-    def _build_ui(self):
-        tk.Label(self.top, text="กรุณาตรวจสอบข้อมูลก่อนดำเนินการ", font=('Arial', 11, 'bold')).pack(pady=10)
-        self._create_patient_info_frame()
-        self._create_series_info_frame()
-        self._create_button_frame()
-    
-    def _create_patient_info_frame(self):
-        info_frame = tk.LabelFrame(self.top, text=" ข้อมูลต้นฉบับจากไฟล์ DICOM ", font=('Arial', 10, 'bold'), padx=10, pady=5)
-        info_frame.pack(fill=tk.X, padx=15, pady=5)
+    def update_sidebar_status(self, active_step: int):
+        for i, (frame, lbl_num, lbl_txt) in enumerate(self.steps_indicators, 1):
+            if i == active_step:
+                frame.config(bg="#1E293B")
+                lbl_num.config(bg=COLOR_SECONDARY, fg="white")
+                lbl_txt.config(fg="white")
+            elif i < active_step:
+                frame.config(bg=COLOR_PRIMARY)
+                lbl_num.config(bg=COLOR_SUCCESS, fg="white")
+                lbl_txt.config(fg="#94A3B8")
+            else:
+                frame.config(bg=COLOR_PRIMARY)
+                lbl_num.config(bg="white", fg=COLOR_PRIMARY)
+                lbl_txt.config(fg="#64748B")
+
+    def show_step(self, step_num: int):
+        self.current_step = step_num
+        self.update_sidebar_status(step_num)
         
-        tags_display = [
-            ("(0010,0010) Patient Name", self.patient_info.PatientName),
-            ("(0010,0020) Patient ID", self.patient_info.PatientID),
-            ("(0010,0030) Patient Birth Date", self.patient_info.PatientBirthDate),
-            ("(0010,0040) Patient Sex", self.patient_info.PatientSex),
-            ("(0010,1010) Patient Age", self.patient_info.PatientAge),
-            ("(0008,0080) Institution Name", self.patient_info.InstitutionName),
-            ("(0008,0081) Institution Address", self.patient_info.InstitutionAddress),
-            ("(0008,0090) Ref. Physician", self.patient_info.ReferringPhysicianName),
-            ("(0008,1050) Perf. Physician", self.patient_info.PerformingPhysicianName)
-        ]
-        
-        for label, value in tags_display:
-            self._create_info_row(info_frame, label, value)
-    
-    @staticmethod
-    def _create_info_row(parent, label: str, value: str):
-        row_frame = tk.Frame(parent)
-        row_frame.pack(fill=tk.X, pady=1)
-        tk.Label(row_frame, text=f"{label}:", width=25, anchor="e", font=('Arial', 9)).pack(side=tk.LEFT)
-        display_value = value if len(value) < 35 else value[:32] + "..."
-        tk.Label(row_frame, text=f" {display_value}", anchor="w", fg="blue", font=('Arial', 9, 'bold')).pack(side=tk.LEFT, fill=tk.X, expand=True)
-    
-    def _create_series_info_frame(self):
-        series_frame = tk.LabelFrame(self.top, text=" ข้อมูล Series ", font=('Arial', 10, 'bold'), padx=10, pady=5)
-        series_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=5)
-        
-        scrollbar = tk.Scrollbar(series_frame)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        series_text = tk.Text(series_frame, height=8, width=50, yscrollcommand=scrollbar.set, font=('Arial', 9), bg="#f9f9f9")
-        series_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.config(command=series_text.yview)
-        
-        self._populate_series_info(series_text)
-        series_text.config(state=tk.DISABLED)
-    
-    def _populate_series_info(self, text_widget):
-        if not self.series_info:
-            text_widget.insert(tk.END, "ไม่พบข้อมูล Series\n")
+        for step, frame in self.stage_frames.items():
+            if step == step_num:
+                frame.pack(fill=tk.BOTH, expand=True)
+            else:
+                frame.pack_forget()
+
+        if step_num == 1:
+            self.btn_back.pack_forget()
+            self.btn_next.config(text="ตรวจสอบรหัสถัดไป ➔")
+        elif step_num == 2:
+            self.btn_back.pack(side=tk.LEFT)
+            self.btn_next.config(text="เริ่มกระบวนการ De-ID ➔")
         else:
-            sorted_series = sorted(self.series_info.keys(), key=lambda x: float(x) if x.replace('.', '', 1).isdigit() else float('inf'))
-            for s_num in sorted_series:
-                data = self.series_info[s_num]
-                spacing_str = ", ".join(sorted(list(data.spacing)))
-                thickness_str = ", ".join(sorted(list(data.thickness)))
-                
-                line = f"Series {s_num}: {data.description}\n"
-                line += f"  ├ Spacing: {spacing_str}\n"
-                line += f"  └ Thickness: {thickness_str}\n\n"
-                text_widget.insert(tk.END, line)
-    
-    def _create_button_frame(self):
-        btn_frame = tk.Frame(self.top)
-        btn_frame.pack(pady=20)
-        tk.Button(btn_frame, text="Close", command=self.on_close, width=18, bg="#f44336", fg="white", font=('Arial', 10, 'bold')).pack(side=tk.LEFT, padx=10)
-        tk.Button(btn_frame, text="De-Identification ➔", command=self.on_deidentify, width=18, bg="#2196F3", fg="white", font=('Arial', 10, 'bold')).pack(side=tk.LEFT, padx=10)
-    
-    def on_close(self):
-        self.action = 'close'
-        self.top.destroy()
-    
-    def on_deidentify(self):
-        self.action = 'de_identify'
-        self.top.destroy()
+            self.btn_back.pack_forget()
+            self.btn_next.config(text="แปลงเสร็จสิ้น / โฟลเดอร์ถัดไป ➔")
 
+    # ==========================================
+    # STAGE 1: เลือกโฟลเดอร์ และ Preview ข้อมูลเดิม
+    # ==========================================
+    def _build_stage1(self):
+        frame = tk.Frame(self.workstage, bg=COLOR_BG_LIGHT)
+        self.stage_frames[1] = frame
+        
+        folder_frame = tk.Frame(frame, bg=COLOR_BG_LIGHT)
+        folder_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        tk.Label(folder_frame, text="โฟลเดอร์เป้าหมาย:", font=("Segoe UI", 10, "bold"), bg=COLOR_BG_LIGHT, fg=COLOR_TEXT_DARK).pack(side=tk.LEFT)
+        self.ent_folder = tk.Entry(folder_frame, bg="white", borderwidth=1, relief=tk.SOLID, font=("Segoe UI", 10), fg=COLOR_TEXT_DARK)
+        self.ent_folder.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10, ipady=4)
+        
+        btn_browse = tk.Button(folder_frame, text="เลือกโฟลเดอร์ DICOM...", command=self.browse_folder, bg=COLOR_PRIMARY, fg="white", 
+                               font=("Segoe UI", 9, "bold"), borderwidth=0, activebackground="#334155")
+        btn_browse.pack(side=tk.LEFT, ipadx=10, ipady=3)
 
-class DataEntryDialog(BaseDialog):
-    def __init__(self, parent):
-        super().__init__(parent, "กำหนดข้อมูล De-identification", "850x600")
-        self.subject_id = None
-        self.protocol_number = None
-        self._build_ui()
-        self.make_modal()
-        parent.wait_window(self.top)
-    
-    def _load_study_formats(self) -> list:
-        """ฟังก์ชันสำหรับดึงข้อมูล Format จากไฟล์ CSV"""
+        split_frame = tk.Frame(frame, bg=COLOR_BG_LIGHT)
+        split_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.left_card = tk.LabelFrame(split_frame, text=" รายละเอียดคนไข้และสถานพยาบาล ", font=("Segoe UI", 10, "bold"), 
+                                      bg=COLOR_CARD_BG, fg=COLOR_SECONDARY, bd=1, relief=tk.SOLID)
+        self.left_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        
+        self.right_card = tk.LabelFrame(split_frame, text=" รายละเอียดและคุณสมบัติ Series ที่พบ ", font=("Segoe UI", 10, "bold"), 
+                                       bg=COLOR_CARD_BG, fg=COLOR_SECONDARY, bd=1, relief=tk.SOLID)
+        self.right_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0))
+
+        cols = ("num", "desc", "spacing", "thickness")
+        self.tree_series = ttk.Treeview(self.right_card, columns=cols, show="headings")
+        self.tree_series.heading("num", text="Series")
+        self.tree_series.heading("desc", text="รายละเอียด")
+        self.tree_series.heading("spacing", text="Spacing")
+        self.tree_series.heading("thickness", text="Thickness")
+        
+        self.tree_series.column("num", width=60, anchor=tk.CENTER)
+        self.tree_series.column("desc", width=160, anchor=tk.W)
+        self.tree_series.column("spacing", width=90, anchor=tk.CENTER)
+        self.tree_series.column("thickness", width=90, anchor=tk.CENTER)
+        
+        scrollbar = ttk.Scrollbar(self.right_card, orient=tk.VERTICAL, command=self.tree_series.yview)
+        self.tree_series.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree_series.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+    def browse_folder(self):
+        folder = filedialog.askdirectory(title="เลือกโฟลเดอร์ข้อมูล DICOM")
+        if not folder:
+            return
+        
+        self.input_dir = folder
+        self.ent_folder.delete(0, tk.END)
+        self.ent_folder.insert(0, folder)
+        
+        self.run_folder_scan()
+
+    def run_folder_scan(self):
+        progress_win = tk.Toplevel(self.root)
+        progress_win.title("สแกนข้อมูล DICOM...")
+        progress_win.geometry("400x120")
+        progress_win.configure(bg=COLOR_BG_LIGHT)
+        progress_win.attributes('-topmost', True)
+        progress_win.grab_set()
+        
+        lbl_info = tk.Label(progress_win, text="กรุณารอสักครู่ กำลังทำการดึงข้อมูล Metadata...", font=("Segoe UI", 10), bg=COLOR_BG_LIGHT)
+        lbl_info.pack(pady=(15, 5))
+        
+        pbar = ttk.Progressbar(progress_win, orient=tk.HORIZONTAL, length=320, mode='determinate')
+        pbar.pack(pady=5)
+        
+        def update_progress(current, total, msg):
+            if not progress_win.winfo_exists():
+                return
+            pct = int((current / total) * 100) if total > 0 else 0
+            pbar['value'] = pct
+            lbl_info.config(text=f"กำลังอ่าน: {current} / {total} ไฟล์")
+            progress_win.update_idletasks()
+
+        self.root.update_idletasks()
+        self.patient_info, self.series_info = self.scanner.scan_folder(self.input_dir, progress_callback=update_progress)
+        
+        if progress_win.winfo_exists():
+            progress_win.grab_release()
+            progress_win.destroy()
+        
+        self.populate_metadata_preview()
+
+    def populate_metadata_preview(self):
+        for widget in self.left_card.winfo_children():
+            widget.destroy()
+
+        patient_tags = [
+            ("Patient Name", self.patient_info.PatientName),
+            ("Patient ID", self.patient_info.PatientID),
+            ("Patient Birth Date", self.patient_info.PatientBirthDate),
+            ("Patient Sex", self.patient_info.PatientSex),
+            ("Patient Age", self.patient_info.PatientAge),
+            ("Study Date", self.patient_info.StudyDate),
+            ("Institution Name", self.patient_info.InstitutionName),
+            ("Institution Address", self.patient_info.InstitutionAddress),
+            ("Ref. Physician", self.patient_info.ReferringPhysicianName),
+            ("Perf. Physician", self.patient_info.PerformingPhysicianName)
+        ]
+
+        for i, (label, val) in enumerate(patient_tags):
+            tk.Label(self.left_card, text=f"{label}:", bg=COLOR_CARD_BG, fg="#64748B", font=("Segoe UI", 9, "bold"), anchor="e", width=18).grid(row=i, column=0, sticky="e", pady=5, padx=5)
+            tk.Label(self.left_card, text=val, bg=COLOR_CARD_BG, fg=COLOR_TEXT_DARK, font=("Segoe UI", 9, "bold"), anchor="w").grid(row=i, column=1, sticky="w", pady=5, padx=5)
+
+        for i in self.tree_series.get_children():
+            self.tree_series.delete(i)
+
+        sorted_keys = sorted(self.series_info.keys(), key=lambda x: float(x) if x.replace('.', '', 1).isdigit() else float('inf'))
+        for key in sorted_keys:
+            data = self.series_info[key]
+            spacing = ", ".join(sorted(list(data.spacing)))
+            thickness = ", ".join(sorted(list(data.thickness)))
+            self.tree_series.insert("", tk.END, values=(key, data.description, spacing, thickness))
+
+    # ==========================================
+    # STAGE 2: กำหนดและตรวจรหัสการวิจัยใหม่
+    # ==========================================
+    def _build_stage2(self):
+        frame = tk.Frame(self.workstage, bg=COLOR_BG_LIGHT)
+        self.stage_frames[2] = frame
+
+        interactive_frame = tk.Frame(frame, bg=COLOR_BG_LIGHT)
+        interactive_frame.pack(fill=tk.BOTH, expand=True)
+
+        guide_frame = tk.LabelFrame(interactive_frame, text=" คู่มือรูปแบบรหัสอ้างอิงของแต่ละ Study (ดับเบิ้ลคลิกแถวเพื่อเลือกกรอกอัตโนมัติ) ", 
+                                    font=("Segoe UI", 10, "bold"), bg=COLOR_CARD_BG, fg=COLOR_SECONDARY, bd=1, relief=tk.SOLID)
+        guide_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+
+        self.tree_formats = ttk.Treeview(guide_frame, columns=("StudyName", "Format"), show="headings")
+        self.tree_formats.heading("StudyName", text="Study Name")
+        self.tree_formats.heading("Format", text="Participant ID Format Structure")
+        self.tree_formats.column("StudyName", width=150, anchor=tk.W)
+        self.tree_formats.column("Format", width=380, anchor=tk.W)
+        
+        scroller = ttk.Scrollbar(guide_frame, orient=tk.VERTICAL, command=self.tree_formats.yview)
+        self.tree_formats.configure(yscrollcommand=scroller.set)
+        scroller.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree_formats.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        self.tree_formats.bind("<Double-1>", self.on_format_double_click)
+
+        input_card = tk.LabelFrame(interactive_frame, text=" กำหนดรหัสข้อมูล De-identification ", font=("Segoe UI", 10, "bold"), 
+                                   bg=COLOR_CARD_BG, fg=COLOR_SECONDARY, bd=1, relief=tk.SOLID, padx=15, pady=15)
+        input_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0))
+
+        lbl_tip = tk.Label(input_card, text="💡 คำแนะนำการป้อนข้อมูล\nโปรดตรวจสอบให้แน่ใจว่ารหัสตรงกับคู่มือด้านซ้ายมือ", 
+                           bg="#EFF6FF", fg="#1D4ED8", font=("Segoe UI", 9, "bold"), justify=tk.LEFT, bd=1, relief=tk.SOLID, padx=10, pady=8)
+        lbl_tip.pack(fill=tk.X, pady=(0, 15))
+
+        tk.Label(input_card, text="Subject Number *", font=("Segoe UI", 10, "bold"), bg=COLOR_CARD_BG, fg=COLOR_TEXT_DARK).pack(anchor="w", pady=2)
+        self.ent_subject = tk.Entry(input_card, bg="white", borderwidth=1, relief=tk.SOLID, font=("Segoe UI", 11), fg=COLOR_TEXT_DARK)
+        self.ent_subject.pack(fill=tk.X, ipady=5, pady=(0, 15))
+        self.ent_subject.bind("<KeyRelease>", self.validate_inputs)
+
+        tk.Label(input_card, text="Protocol Number *", font=("Segoe UI", 10, "bold"), bg=COLOR_CARD_BG, fg=COLOR_TEXT_DARK).pack(anchor="w", pady=2)
+        self.ent_protocol = tk.Entry(input_card, bg="white", borderwidth=1, relief=tk.SOLID, font=("Segoe UI", 11), fg=COLOR_TEXT_DARK)
+        self.ent_protocol.pack(fill=tk.X, ipady=5, pady=(0, 15))
+        self.ent_protocol.bind("<KeyRelease>", self.validate_inputs)
+
+        # --- ส่วนของอินเทอร์เฟซเพิ่มทางเลือกลบข้อมูล เพศ และ อายุ ---
+        options_frame = tk.LabelFrame(input_card, text=" ตัวเลือกการลบ/ปกปิดข้อมูลสถิติประชากร ", font=("Segoe UI", 10, "bold"),
+                                   bg=COLOR_CARD_BG, fg=COLOR_SECONDARY, bd=1, relief=tk.SOLID, padx=10, pady=8)
+        options_frame.pack(fill=tk.X, pady=(0, 15))
+
+        cb_age = tk.Checkbutton(options_frame, text="ลบข้อมูลอายุคนไข้ (Clear Patient Age)", variable=self.var_clear_age, 
+                                bg=COLOR_CARD_BG, fg=COLOR_TEXT_DARK, font=("Segoe UI", 9, "bold"), activebackground=COLOR_CARD_BG)
+        cb_age.pack(anchor="w", pady=2)
+
+        cb_sex = tk.Checkbutton(options_frame, text="ลบข้อมูลเพศคนไข้ (Clear Patient Sex)", variable=self.var_clear_sex, 
+                                bg=COLOR_CARD_BG, fg=COLOR_TEXT_DARK, font=("Segoe UI", 9, "bold"), activebackground=COLOR_CARD_BG)
+        cb_sex.pack(anchor="w", pady=2)
+        # -----------------------------------------------------
+
+        preview_frame = tk.Frame(input_card, bg="#F1F5F9", bd=1, relief=tk.SOLID, padx=10, pady=8)
+        preview_frame.pack(fill=tk.X, pady=(15, 0))
+        self.lbl_path_preview = tk.Label(preview_frame, text="ตำแหน่งบันทึกไฟล์ส่งออก: -", font=("Segoe UI", 9, "bold"), bg="#F1F5F9", fg="#475569", anchor="w", justify=tk.LEFT, wraplength=350)
+        self.lbl_path_preview.pack(fill=tk.X)
+
+        self._load_and_populate_formats()
+
+    def _load_and_populate_formats(self):
         filepath = CONFIG.FORMATS_FILE
-        # ข้อมูลตั้งต้นในกรณีที่ยังไม่มีไฟล์
         default_formats = [
-            ("20210033", "Study number 3 หลัก ('933') + Site number 5 หลัก ('62001') + participant number 3 หลัก (93362001XXX)"),
+            ("20210033", "Study number 3 หลัก ('933') + Site 5 หลัก ('62001') + pt ID 3 หลัก (93362001XXX)"),
             ("OP-1250-301", "6606-6XXX"),
             ("OP-1250-302", "6606-7XXX"),
-            ("BNT327-06", "Site number + participant number (764-01-XXXX)"),
+            ("BNT327-06", "Site number + participant number (XXX-XX-XXXX)"),
             ("BO43249", "XXXXX"),
             ("CT-P51 3.1", "Site number + participant number (5602XXXX)"),
             ("MB12-C-02-24", "Site number + participant number (XXXXXXXXX)"),
-            ("MK-2400-001", "Site 4 หลัก (0887)+ Screening 5 หลัก (0887-YYYYY) หรือ Randomization 6 หลัก"),
-            ("MK-1022-016", "Site 4 หลัก (2924)+ Screening 5 หลัก (2924-YYYYY) หรือ Randomization 6 หลัก"),
-            ("MK-2870-009", "Site 4 หลัก (4006)+ Screening 5 หลัก (4006-YYYYY) หรือ Randomization 6 หลัก"),
-            ("MK-2870-023", "Site 4 หลัก (2300)+ Screening 5 หลัก (2300-YYYYY) หรือ Randomization 6 หลัก"),
-            ("V940-011", "Site number 4 หลัก + Screening number 5 หลัก (3002-YYYYY)"),
-            ("MO41552", "Site number + participant number (501243-XXXX)"),
+            ("MK-2400-001", "Site 4 หลัก (0887)+ Screen 5 หลัก (XXXX-YYYYY) หรือ Rand 6 หลัก"),
+            ("MK-1022-016", "Site 4 หลัก (2924)+ Screen 5 หลัก (XXXX-YYYYY) หรือ Rand 6 หลัก"),
+            ("MK-2870-009", "Site 4 หลัก (4006)+ Screen 5 หลัก (XXXX-YYYYY) หรือ Rand 6 หลัก"),
+            ("MK-2870-023", "Site 4 หลัก (2300)+ Screen 5 หลัก (XXXX-YYYYY) หรือ Rand 6 หลัก"),
+            ("MO41552", "XXXX"),
             ("TAS-6417-301", "Site number + participant number (800-XXX)"),
+            ("V940-011", "Site number 4 หลัก + Screening number 5 หลัก (XXXX-YYYYY)")
         ]
         
-        # ถ้าไม่มีไฟล์ ให้สร้างไฟล์ใหม่ขึ้นมาและใส่ Default ลงไป
+        formats = []
         if not os.path.exists(filepath):
             try:
-                # ใช้ utf-8-sig เพื่อให้เปิดใน Excel แล้วภาษาไทยไม่เพี้ยน
                 with open(filepath, mode='w', encoding='utf-8-sig', newline='') as f:
                     writer = csv.writer(f)
                     writer.writerow(["StudyName", "Format"])
                     writer.writerows(default_formats)
             except Exception as e:
                 logger.error(f"Cannot create default study_formats.csv: {e}")
-            return default_formats
+            formats = default_formats
+        else:
+            try:
+                with open(filepath, mode='r', encoding='utf-8-sig') as f:
+                    reader = csv.reader(f)
+                    next(reader, None)  
+                    for row in reader:
+                        if len(row) >= 2:
+                            formats.append((row[0].strip(), row[1].strip()))
+            except Exception as e:
+                logger.error(f"Error reading {filepath}: {e}")
+                formats = default_formats
 
-        # ถ้ามีไฟล์อยู่แล้ว ให้อ่านจากไฟล์ขึ้นมาแสดง
-        formats = []
-        try:
-            with open(filepath, mode='r', encoding='utf-8-sig') as f:
-                reader = csv.reader(f)
-                next(reader, None)  # ข้าม Header
-                for row in reader:
-                    if len(row) >= 2:
-                        formats.append((row[0].strip(), row[1].strip()))
-        except Exception as e:
-            logger.error(f"Error reading {filepath}: {e}")
-            return default_formats
-            
-        return formats
+        for item in formats:
+            self.tree_formats.insert("", tk.END, values=item)
 
-    def _build_ui(self):
-        tk.Label(self.top, text="คู่มือรูปแบบการกำหนดรหัส", font=('Arial', 11, 'bold')).pack(pady=10)
-        self._create_study_table()
-        self._create_entry_form()
-        self._create_button_frame()
-    
-    def _create_study_table(self):
-        table_frame = tk.Frame(self.top, padx=15)
-        table_frame.pack(fill=tk.BOTH, expand=True)
-        
-        columns = ("StudyName", "Format")
-        self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=12)
-        self.tree.heading("StudyName", text="Study Name")
-        self.tree.heading("Format", text="Participant ID Format")
-        self.tree.column("StudyName", width=150, anchor=tk.W)
-        self.tree.column("Format", width=650, anchor=tk.W)
-        
-        # ดึงข้อมูลผ่านฟังก์ชันที่เขียนไว้
-        study_formats = self._load_study_formats()
-        
-        for item in study_formats:
-            self.tree.insert("", tk.END, values=item)
-        
-        scrollbar = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    
-    def _create_entry_form(self):
-        form_frame = tk.Frame(self.top, pady=15)
-        form_frame.pack()
-        
-        tk.Label(form_frame, text="Subject Number:", font=('Arial', 10, 'bold')).grid(row=0, column=0, padx=10, pady=5, sticky=tk.E)
-        self.subj_entry = tk.Entry(form_frame, width=40, font=('Arial', 10))
-        self.subj_entry.grid(row=0, column=1, pady=5)
-        self.subj_entry.focus()
-        
-        tk.Label(form_frame, text="Protocol Number:", font=('Arial', 10, 'bold')).grid(row=1, column=0, padx=10, pady=5, sticky=tk.E)
-        self.prot_entry = tk.Entry(form_frame, width=40, font=('Arial', 10))
-        self.prot_entry.grid(row=1, column=1, pady=5)
-    
-    def _create_button_frame(self):
-        btn_frame = tk.Frame(self.top)
-        btn_frame.pack(pady=15)
-        
-        tk.Button(btn_frame, text="⬅ Back", command=self.on_back, width=15, bg="#9E9E9E", fg="white", font=('Arial', 10, 'bold')).pack(side=tk.LEFT, padx=10)
-        tk.Button(btn_frame, text="OK ✓", command=self.on_ok, width=15, bg="#4CAF50", fg="white", font=('Arial', 10, 'bold')).pack(side=tk.LEFT, padx=10)
-    
-    def on_back(self):
-        self.action = 'back'
-        self.top.destroy()
-    
-    def on_ok(self):
-        self.subject_id = self.subj_entry.get().strip()
-        self.protocol_number = self.prot_entry.get().strip()
-        
-        if not self.subject_id or not self.protocol_number:
-            messagebox.showwarning("Input Error", "Please fill both fields")
+    def on_format_double_click(self, event):
+        selected_item = self.tree_formats.selection()
+        if not selected_item:
             return
         
-        self.action = 'ok'
-        self.top.destroy()
+        values = self.tree_formats.item(selected_item[0], "values")
+        if values:
+            study_name = values[0]
+            self.ent_protocol.delete(0, tk.END)
+            self.ent_protocol.insert(0, study_name)
+            self.validate_inputs(None)
 
-class SummaryDialog:
-    def __init__(self, parent, input_dir, output_dir, subj_id, prot_num):
-        self.top = tk.Toplevel(parent)
-        self.top.title("สรุปข้อมูลก่อนเริ่มทำงาน")
-        self.top.geometry("650x350")
-        self.top.attributes('-topmost', True)
-        self.top.focus_force()
-        self.action = None 
-
-        tk.Label(self.top, text="กรุณาตรวจสอบความถูกต้องของข้อมูล", font=("Arial", 12, "bold")).pack(pady=15)
+    def validate_inputs(self, event=None):
+        subj = self.ent_subject.get().strip()
+        prot = self.ent_protocol.get().strip()
         
-        info_frame = tk.Frame(self.top, bg="#f0f0f0", padx=10, pady=10)
-        info_frame.pack(pady=10, padx=20, fill=tk.X)
+        if subj:
+            self.ent_subject.config(highlightbackground=COLOR_SUCCESS, highlightcolor=COLOR_SUCCESS, highlightthickness=1)
+        else:
+            self.ent_subject.config(highlightbackground=COLOR_DANGER, highlightcolor=COLOR_DANGER, highlightthickness=1)
+
+        if prot:
+            self.ent_protocol.config(highlightbackground=COLOR_SUCCESS, highlightcolor=COLOR_SUCCESS, highlightthickness=1)
+        else:
+            self.ent_protocol.config(highlightbackground=COLOR_DANGER, highlightcolor=COLOR_DANGER, highlightthickness=1)
+
+        if subj and prot:
+            out_folder_name = f"{Path(self.input_dir).name}_DeID_{subj}"
+            self.output_dir = os.path.join(str(Path(self.input_dir).parent), out_folder_name)
+            self.lbl_path_preview.config(text=f"ตำแหน่งบันทึกไฟล์ส่งออก:\n{self.output_dir}", fg=COLOR_SECONDARY)
+        else:
+            self.lbl_path_preview.config(text="ตำแหน่งบันทึกไฟล์ส่งออก: (กรุณากรอกรหัสให้ครบก่อน)", fg="#94A3B8")
+
+    # ==========================================
+    # STAGE 3: ดำเนินการเสร็จสิ้น & ตารางสรุปเปรียบเทียบ
+    # ==========================================
+    def _build_stage3(self):
+        frame = tk.Frame(self.workstage, bg=COLOR_BG_LIGHT)
+        self.stage_frames[3] = frame
+
+        self.card_status = tk.Frame(frame, bg="#E8F5E9", bd=1, relief=tk.SOLID, padx=15, pady=12)
+        self.card_status.pack(fill=tk.X, pady=(0, 15))
         
-        tk.Label(info_frame, text=f"Input Folder : {input_dir}", bg="#f0f0f0", anchor="w").pack(fill=tk.X, pady=2)
-        tk.Label(info_frame, text=f"Output Folder : {output_dir}", bg="#f0f0f0", anchor="w").pack(fill=tk.X, pady=2)
-        tk.Label(info_frame, text=f"Subject Number : {subj_id}", bg="#f0f0f0", anchor="w", fg="blue", font=('Arial', 10, 'bold')).pack(fill=tk.X, pady=2)
-        tk.Label(info_frame, text=f"Protocol Number : {prot_num}", bg="#f0f0f0", anchor="w", fg="blue", font=('Arial', 10, 'bold')).pack(fill=tk.X, pady=2)
-
-        btn_frame = tk.Frame(self.top)
-        btn_frame.pack(pady=20)
-
-        tk.Button(btn_frame, text="Run (เริ่มทำงาน)", command=self.on_run, width=15, bg="#4CAF50", fg="white", font=('Arial', 10, 'bold')).pack(side=tk.LEFT, padx=15)
-        tk.Button(btn_frame, text="เลือก Folder ใหม่", command=self.on_reselect, width=15, bg="#f44336", fg="white").pack(side=tk.LEFT, padx=15)
-
-        self.top.grab_set()
-        parent.wait_window(self.top)
-
-    def on_run(self):
-        self.action = 'run'
-        self.top.destroy()
-
-    def on_reselect(self):
-        self.action = 'reselect'
-        self.top.destroy()
-
-
-class FinalResultDialog(BaseDialog):
-    def __init__(self, parent, result: ProcessResult, output_dir: str, original_info: PatientInfo, new_subject_id: str, new_protocol: str):
-        super().__init__(parent, "กระบวนการเสร็จสมบูรณ์ (Process Completed)", "750x700")
-        self.result = result
-        self.output_dir = output_dir
-        self.original_info = original_info
-        self.new_subject_id = new_subject_id
-        self.new_protocol = new_protocol
+        self.lbl_summary_title = tk.Label(self.card_status, text="✅ แปลงข้อมูลสำเร็จเสร็จสิ้นเรียบร้อย!", font=("Segoe UI", 12, "bold"), fg="#1B5E20", bg="#E8F5E9")
+        self.lbl_summary_title.pack(anchor="w")
         
-        self._build_ui()
-        self.make_modal()
-        parent.wait_window(self.top)
-        
-    def _build_ui(self):
-        header_frame = tk.Frame(self.top, bg="#E8F5E9", pady=15)
-        header_frame.pack(fill=tk.X)
-        tk.Label(header_frame, text="✅ De-identification สำเร็จเรียบร้อย!", font=("Arial", 14, "bold"), fg="#2E7D32", bg="#E8F5E9").pack()
-        
-        stats_text = f"แปลงผ่าน QC สำเร็จ: {self.result.success_count} | ข้าม Report & Series: {self.result.skip_count}\nพบข้อผิดพลาด/ไฟล์เสีย: {self.result.error_count} | ไม่ผ่าน QC (ลบทิ้ง): {self.result.qc_failed_count}"
-        tk.Label(header_frame, text=stats_text, font=("Arial", 11), bg="#E8F5E9").pack(pady=5)
-        
-        if self.result.qc_failed_count > 0:
-            tk.Button(header_frame, text="⚠️ ดูรายละเอียดไฟล์ที่ไม่ผ่าน QC", 
-                      command=self.show_failed_files, 
-                      bg="#FF9800", fg="white", font=('Arial', 10, 'bold')).pack(pady=5)
-                      
-        tk.Label(header_frame, text=f"📂 บันทึกไว้ที่: {self.output_dir}", font=("Arial", 9), bg="#E8F5E9").pack(pady=(5,0))
+        self.lbl_summary_details = tk.Label(self.card_status, text="-", font=("Segoe UI", 10), fg="#2E7D32", bg="#E8F5E9", justify=tk.LEFT)
+        self.lbl_summary_details.pack(anchor="w", pady=(5, 0))
 
-        tk.Label(self.top, text="ตารางเปรียบเทียบค่าพารามิเตอร์ (Before vs After)", font=('Arial', 11, 'bold')).pack(pady=10)
+        tbl_frame = tk.LabelFrame(frame, text=" ตารางเปรียบเทียบค่าพารามิเตอร์ของระบบก่อน-หลังแปลงข้อมูล (Before vs After) ", 
+                                  font=("Segoe UI", 10, "bold"), bg=COLOR_CARD_BG, fg=COLOR_SECONDARY, bd=1, relief=tk.SOLID)
+        tbl_frame.pack(fill=tk.BOTH, expand=True)
 
-        table_frame = tk.Frame(self.top, padx=15)
-        table_frame.pack(fill=tk.BOTH, expand=True)
-
-        columns = ("Tag", "Before", "After")
-        tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=10)
-        tree.heading("Tag", text="DICOM Tag")
-        tree.heading("Before", text="ค่าต้นฉบับ (Before)")
-        tree.heading("After", text="ค่าที่ถูกเปลี่ยนแปลง (After)")
+        cols = ("tag", "orig", "mod")
+        self.tree_comp = ttk.Treeview(tbl_frame, columns=cols, show="headings")
+        self.tree_comp.heading("tag", text="คุณลักษณะของ DICOM TAG")
+        self.tree_comp.heading("orig", text="ข้อมูลต้นฉบับดั้งเดิม (Before)")
+        self.tree_comp.heading("mod", text="ข้อมูลที่ได้รับการปกปิดใหม่ (After)")
         
-        tree.column("Tag", width=150, anchor=tk.W)
-        tree.column("Before", width=250, anchor=tk.W)
-        tree.column("After", width=250, anchor=tk.W)
+        self.tree_comp.column("tag", width=180, anchor=tk.W)
+        self.tree_comp.column("orig", width=320, anchor=tk.W)
+        self.tree_comp.column("mod", width=320, anchor=tk.W)
 
-        dob_after = "(ว่างเปล่า / ลบทิ้ง)"
-        orig_dob = self.original_info.PatientBirthDate
-        if orig_dob and len(orig_dob) >= 4 and orig_dob != 'Not Found / Empty':
+        scroller = ttk.Scrollbar(tbl_frame, orient=tk.VERTICAL, command=self.tree_comp.yview)
+        self.tree_comp.configure(yscrollcommand=scroller.set)
+        scroller.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree_comp.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+    def run_deidentification(self):
+        subj = self.ent_subject.get().strip()
+        prot = self.ent_protocol.get().strip()
+        
+        # ดึงสถานะปัจจุบันของ Checkbox
+        clear_age = self.var_clear_age.get()
+        clear_sex = self.var_clear_sex.get()
+        
+        progress_win = tk.Toplevel(self.root)
+        progress_win.title("กำลังรันการ De-ID...")
+        progress_win.geometry("420x130")
+        progress_win.configure(bg=COLOR_BG_LIGHT)
+        progress_win.attributes('-topmost', True)
+        progress_win.grab_set()
+        
+        lbl_info = tk.Label(progress_win, text="กำลังประมวลผล De-ID ในข้อมูลภาพ...", font=("Segoe UI", 10), bg=COLOR_BG_LIGHT)
+        lbl_info.pack(pady=(15, 5))
+        
+        pbar = ttk.Progressbar(progress_win, orient=tk.HORIZONTAL, length=320, mode='determinate')
+        pbar.pack(pady=5)
+        
+        def update_progress(current, total, msg):
+            if not progress_win.winfo_exists():
+                return
+            pct = int((current / total) * 100) if total > 0 else 0
+            pbar['value'] = pct
+            lbl_info.config(text=f"กำลังประมวลผล: {current} / {total} ไฟล์")
+            progress_win.update_idletasks()
+
+        self.root.update_idletasks()
+        
+        # ส่งผ่านตัวแปรการปิดบังอายุและเพศเข้าสู่ Loop ระดับโฟลเดอร์
+        result = self.folder_processor.process(
+            self.input_dir, self.output_dir, subj, prot, 
+            clear_sex=clear_sex, clear_age=clear_age, 
+            progress_callback=update_progress
+        )
+        
+        if progress_win.winfo_exists():
+            progress_win.grab_release()
+            progress_win.destroy()
+
+        self.lbl_summary_details.config(
+            text=f"แปลงผ่านการรับรองและตรวจ QC สำเร็จ: {result.success_count} ไฟล์ | ข้ามไฟล์/รายงาน: {result.skip_count} ไฟล์\n"
+                 f"ไม่ผ่านระบบตรวจสอบโครงสร้าง: {result.error_count} ไฟล์ | ไม่ผ่านเกณฑ์ควบคุมมาตรฐาน QC (ถูกทำลายทิ้ง): {result.qc_failed_count} ไฟล์\n"
+                 f"โฟลเดอร์ผลลัพธ์ใหม่เก็บไว้ที่: {self.output_dir}"
+        )
+
+        for idx_row in self.tree_comp.get_children():
+            self.tree_comp.delete(idx_row)
+
+        orig_dob = self.patient_info.PatientBirthDate
+        dob_after = "ว่างเปล่า / ลบทิ้ง"
+        if orig_dob and len(orig_dob) >= 4 and orig_dob != 'ไม่พบข้อมูล / ว่างเปล่า':
             dob_after = f"{orig_dob[:4]}0101"
 
-        comparison_data = [
-            ("Patient Name", self.original_info.PatientName, self.new_subject_id),
-            ("Patient ID", self.original_info.PatientID, self.new_protocol),
+        # ปรับการแสดงผลของตารางเปรียบเทียบ (Before vs After) ตามที่เลือกจริง
+        sex_after_display = "ว่างเปล่า / ลบทิ้ง" if clear_sex else f"{self.patient_info.PatientSex} (คงค่าเดิมไว้)"
+        age_after_display = "ว่างเปล่า / ลบทิ้ง" if clear_age else f"{self.patient_info.PatientAge} (คงค่าเดิมไว้)"
+
+        comparison_rows = [
+            ("Patient Name", self.patient_info.PatientName, subj),
+            ("Patient ID", self.patient_info.PatientID, prot),
             ("Patient Birth Date", orig_dob, dob_after),
-            ("Patient Sex", self.original_info.PatientSex, "(ว่างเปล่า / ลบทิ้ง)"), 
-            ("Patient Age", self.original_info.PatientAge, "(ว่างเปล่า / ลบทิ้ง)"), 
-            ("Institution Name", self.original_info.InstitutionName, self.new_protocol),
-            ("Institution Address", self.original_info.InstitutionAddress, "(ว่างเปล่า / ลบทิ้ง)"),
-            ("Referring Physician", self.original_info.ReferringPhysicianName, self.new_protocol),
-            ("Performing Physician", self.original_info.PerformingPhysicianName, "(ว่างเปล่า / ลบทิ้ง)"),
-            ("Annotations", "(อาจมีเส้นวาด หรือ กล่องข้อความ)", "(ลบทิ้งทั้งหมด)")
+            ("Patient Sex", self.patient_info.PatientSex, sex_after_display),
+            ("Patient Age", self.patient_info.PatientAge, age_after_display),
+            ("Study Date", self.patient_info.StudyDate, f"{self.patient_info.StudyDate} (คงไว้ตามมาตรฐานการจัดเก็บ)"),
+            ("Institution Name", self.patient_info.InstitutionName, prot),
+            ("Institution Address", self.patient_info.InstitutionAddress, "ว่างเปล่า / ลบทิ้ง"),
+            ("Referring Physician", self.patient_info.ReferringPhysicianName, prot),
+            ("Performing Physician", self.patient_info.PerformingPhysicianName, "ว่างเปล่า / ลบทิ้ง"),
+            ("Annotation Layers", "(อาจพบลายเส้นพิกเซลหรือกล่องข้อความบรรยาย)", "(ลบทิ้งทั้งหมดผ่าน Graphic Annotation Sequence)")
         ]
 
-        for item in comparison_data:
-            tree.insert("", tk.END, values=item)
+        for item in comparison_rows:
+            self.tree_comp.insert("", tk.END, values=item)
 
-        tree.pack(fill=tk.BOTH, expand=True)
+        if result.qc_failed_count > 0:
+            details_str = "\n\n".join(result.failed_files_details)
+            messagebox.showwarning("ตรวจสอบความเข้ากันได้", 
+                                   f"คำเตือน: มีไฟล์จำนวน {result.qc_failed_count} ไฟล์ที่ไม่ผ่านการทำ QC และถูกลบทิ้งจากปลายทาง\n\nรายละเอียดข้อผิดพลาดเพิ่มเติม:\n{details_str}")
 
-        tk.Button(self.top, text="Finish (เสร็จสิ้น)", command=self.top.destroy, width=20, bg="#4CAF50", fg="white", font=('Arial', 11, 'bold')).pack(pady=20)
+    # ==========================================
+    # Controller Logic: ทิศทางการสลับหน้าจอ (Wizard Navigation)
+    # ==========================================
+    def on_back(self):
+        if self.current_step == 2:
+            self.show_step(1)
 
-    def show_failed_files(self):
-        fail_window = tk.Toplevel(self.top)
-        fail_window.title("รายละเอียดไฟล์ที่ไม่ผ่าน QC (Failed Files Details)")
-        fail_window.geometry("700x400")
-        fail_window.attributes('-topmost', True)
-        
-        tk.Label(fail_window, text=f"รายการไฟล์ที่ไม่ผ่านการ QC ทั้ง {len(self.result.failed_files_details)} ไฟล์", 
-                 font=('Arial', 11, 'bold'), fg="red").pack(pady=10)
-                 
-        text_area = tk.Text(fail_window, font=('Courier', 9), bg="#FFF3E0", padx=10, pady=10)
-        text_area.pack(fill=tk.BOTH, expand=True, padx=15, pady=5)
-        
-        scrollbar = tk.Scrollbar(text_area)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        text_area.config(yscrollcommand=scrollbar.set)
-        scrollbar.config(command=text_area.yview)
-        
-        for details in self.result.failed_files_details:
-            text_area.insert(tk.END, details + "\n" + "-"*60 + "\n")
+    def on_next(self):
+        if self.current_step == 1:
+            if not self.input_dir:
+                messagebox.showwarning("กรุณาเลือกไฟล์", "กรุณาทำการเลือกโฟลเดอร์ที่เก็บ DICOM ต้นฉบับเพื่อสแกนโครงสร้างข้อมูลก่อน")
+                return
+            self.show_step(2)
+            self.validate_inputs()
+        elif self.current_step == 2:
+            subj = self.ent_subject.get().strip()
+            prot = self.ent_protocol.get().strip()
+            if not subj or not prot:
+                messagebox.showwarning("กรอกข้อมูลให้ครบถ้วน", "กรุณาระบุ Subject Number และ Protocol Number ก่อนเริ่มขั้นตอนแปลงข้อมูล")
+                return
+            self.show_step(3)
+            self.run_deidentification()
+        elif self.current_step == 3:
+            self.input_dir = ""
+            self.output_dir = ""
+            self.ent_folder.delete(0, tk.END)
+            self.ent_subject.delete(0, tk.END)
+            self.ent_protocol.delete(0, tk.END)
+            # รีเซ็ตค่าตัวเลือกกลับเป็น Default (ลบ) สำหรับโฟลเดอร์ถัดไป
+            self.var_clear_age.set(True)
+            self.var_clear_sex.set(True)
             
-        text_area.config(state=tk.DISABLED)
-        
-        tk.Button(fail_window, text="ปิดหน้าต่าง", command=fail_window.destroy, 
-                  width=15, bg="#9E9E9E", fg="white").pack(pady=10)
-
-
-# ==========================================
-# 5. Main Application
-# ==========================================
-class DICOMDeIDApplication:
-    def __init__(self):
-        self.root = tk.Tk()
-        self.root.withdraw()
-        
-        self.processor = DICOMProcessor()
-        self.scanner = DICOMScanner(self.processor)
-        self.deidentifier = DICOMDeIdentifier(self.processor)
-        self.folder_processor = DICOMFolderProcessor(self.deidentifier)
-    
-    def run(self):
-        try:
-            self.main_loop()
-        except Exception as e:
-            logger.exception("Application error")
-            messagebox.showerror("Error", f"Application error: {str(e)}")
-        finally:
-            self.root.destroy()
-    
-    def main_loop(self):
-        while True:
-            input_dir = filedialog.askdirectory(title="Step 1: Select DICOM folder")
-            
-            if not input_dir:
-                break
-            
-            scan_prog = ProgressDialog(self.root, title="กำลังสแกนข้อมูล DICOM ต้นฉบับ...")
-            patient_info, series_info = self.scanner.scan_folder(input_dir, progress_callback=scan_prog.update_progress)
-            scan_prog.close()
-            
-            if not self._process_workflow(input_dir, patient_info, series_info):
-                break
-    
-    def _process_workflow(self, input_dir: str, patient_info: PatientInfo, series_info: Dict) -> bool:
-        while True:
-            preview = DataPreviewDialog(self.root, patient_info, series_info)
-            
-            if preview.action != 'de_identify':
-                return False
-            
-            entry = DataEntryDialog(self.root)
-            
-            if entry.action == 'back':
-                continue
-            elif entry.action == 'ok':
-                return self._execute_deidentification(input_dir, patient_info, entry.subject_id, entry.protocol_number) # pyright: ignore[reportArgumentType]
-            else:
-                return False
-    
-    def _execute_deidentification(self, input_dir: str, patient_info: PatientInfo, 
-                                    subject_id: str, protocol_number: str) -> bool:
-        output_dir = f"{input_dir}_DeID_{subject_id}"
-        
-        process_prog = ProgressDialog(self.root, title="กำลังทำ De-identification (อย่าปิดโปรแกรม)...")
-        result = self.folder_processor.process(input_dir, output_dir, subject_id, protocol_number, progress_callback=process_prog.update_progress)
-        process_prog.close() 
-        
-        FinalResultDialog(self.root, result, output_dir, patient_info, subject_id, protocol_number)
-        
-        return True
-
+            for i in self.tree_series.get_children():
+                self.tree_series.delete(i)
+            for widget in self.left_card.winfo_children():
+                widget.destroy()
+                
+            self.show_step(1)
 
 if __name__ == "__main__":
-    app = DICOMDeIDApplication()
-    app.run()
+    root = tk.Tk()
+    app = ModernDICOMDeIDApp(root)
+    root.mainloop()
