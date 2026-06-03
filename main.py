@@ -270,25 +270,22 @@ class DICOMFolderProcessor:
                     result.skip_count += 1
                     continue
                 
-                meta_dataset = self.processor.read_dicom_metadata(input_path)
-                if not meta_dataset:
-                    result.error_count += 1
-                    continue
-                
-                skip_reason = self.deidentifier.should_skip_file(meta_dataset)
-                if skip_reason:
-                    result.skip_count += 1
-                    continue
-                
                 process_success = False
                 last_error_message = ""
                 
                 try:
+                    # Optimization 1: อ่านไฟล์แบบเต็มเพียงครั้งเดียว
                     dataset = self.processor.read_dicom_full(input_path)
                     if not dataset:
                         last_error_message = "ไม่สามารถอ่านโครงสร้างไฟล์ DICOM เต็มรูปแบบได้"
                     else:
-                        # ส่งผ่านตัวแปรทางเลือกการลบไปยัง De-Identifier Core
+                        # ตรวจสอบเงื่อนไขการข้ามไฟล์ด้วย dataset เต็มที่อ่านมาแล้ว
+                        skip_reason = self.deidentifier.should_skip_file(dataset)
+                        if skip_reason:
+                            result.skip_count += 1
+                            continue
+                            
+                        # ส่งผ่านตัวแปรทางเลือกการลบไปยัง De-Identifier Core ทันที
                         self.deidentifier.deidentify(dataset, subject_id, protocol_number, clear_sex, clear_age)
                         output_path = os.path.join(output_dir, f"{subject_id}_{filename}")
                         dataset.save_as(output_path)
@@ -311,7 +308,7 @@ class DICOMFolderProcessor:
                 else:
                     if "ไม่สามารถอ่านโครงสร้าง" in last_error_message:
                         result.error_count += 1
-                    else:
+                    elif last_error_message:
                         result.qc_failed_count += 1
                         result.failed_files_details.append(f"📁 Path: {input_path}\n❌ สาเหตุ: {last_error_message}")
         
@@ -460,18 +457,18 @@ class ModernDICOMDeIDApp:
         self.ent_folder.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10, ipady=4)
         
         btn_browse = tk.Button(folder_frame, text="เลือกโฟลเดอร์ DICOM...", command=self.browse_folder, bg=COLOR_PRIMARY, fg="white", 
-                               font=("Segoe UI", 9, "bold"), borderwidth=0, activebackground="#334155")
+                            font=("Segoe UI", 9, "bold"), borderwidth=0, activebackground="#334155")
         btn_browse.pack(side=tk.LEFT, ipadx=10, ipady=3)
 
         split_frame = tk.Frame(frame, bg=COLOR_BG_LIGHT)
         split_frame.pack(fill=tk.BOTH, expand=True)
 
         self.left_card = tk.LabelFrame(split_frame, text=" รายละเอียดคนไข้และสถานพยาบาล ", font=("Segoe UI", 10, "bold"), 
-                                      bg=COLOR_CARD_BG, fg=COLOR_SECONDARY, bd=1, relief=tk.SOLID)
+                                    bg=COLOR_CARD_BG, fg=COLOR_SECONDARY, bd=1, relief=tk.SOLID)
         self.left_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
         
         self.right_card = tk.LabelFrame(split_frame, text=" รายละเอียดและคุณสมบัติ Series ที่พบ ", font=("Segoe UI", 10, "bold"), 
-                                       bg=COLOR_CARD_BG, fg=COLOR_SECONDARY, bd=1, relief=tk.SOLID)
+                                    bg=COLOR_CARD_BG, fg=COLOR_SECONDARY, bd=1, relief=tk.SOLID)
         self.right_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0))
 
         cols = ("num", "desc", "spacing", "thickness")
@@ -519,10 +516,12 @@ class ModernDICOMDeIDApp:
         def update_progress(current, total, msg):
             if not progress_win.winfo_exists():
                 return
-            pct = int((current / total) * 100) if total > 0 else 0
-            pbar['value'] = pct
-            lbl_info.config(text=f"กำลังอ่าน: {current} / {total} ไฟล์")
-            progress_win.update_idletasks()
+            # Optimization 2: อัปเดต GUI เฉพาะตอนเริ่ม, ตอนจบ หรือทุกๆ 50 ไฟล์
+            if current == 1 or current == total or current % 50 == 0:
+                pct = int((current / total) * 100) if total > 0 else 0
+                pbar['value'] = pct
+                lbl_info.config(text=f"กำลังอ่าน: {current} / {total} ไฟล์")
+                progress_win.update_idletasks()
 
         self.root.update_idletasks()
         self.patient_info, self.series_info = self.scanner.scan_folder(self.input_dir, progress_callback=update_progress)
@@ -592,11 +591,11 @@ class ModernDICOMDeIDApp:
         self.tree_formats.bind("<Double-1>", self.on_format_double_click)
 
         input_card = tk.LabelFrame(interactive_frame, text=" กำหนดรหัสข้อมูล De-identification ", font=("Segoe UI", 10, "bold"), 
-                                   bg=COLOR_CARD_BG, fg=COLOR_SECONDARY, bd=1, relief=tk.SOLID, padx=15, pady=15)
+                                bg=COLOR_CARD_BG, fg=COLOR_SECONDARY, bd=1, relief=tk.SOLID, padx=15, pady=15)
         input_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0))
 
         lbl_tip = tk.Label(input_card, text="💡 คำแนะนำการป้อนข้อมูล\nโปรดตรวจสอบให้แน่ใจว่ารหัสตรงกับคู่มือด้านซ้ายมือ", 
-                           bg="#EFF6FF", fg="#1D4ED8", font=("Segoe UI", 9, "bold"), justify=tk.LEFT, bd=1, relief=tk.SOLID, padx=10, pady=8)
+                        bg="#EFF6FF", fg="#1D4ED8", font=("Segoe UI", 9, "bold"), justify=tk.LEFT, bd=1, relief=tk.SOLID, padx=10, pady=8)
         lbl_tip.pack(fill=tk.X, pady=(0, 15))
 
         tk.Label(input_card, text="Subject Number *", font=("Segoe UI", 10, "bold"), bg=COLOR_CARD_BG, fg=COLOR_TEXT_DARK).pack(anchor="w", pady=2)
@@ -766,10 +765,12 @@ class ModernDICOMDeIDApp:
         def update_progress(current, total, msg):
             if not progress_win.winfo_exists():
                 return
-            pct = int((current / total) * 100) if total > 0 else 0
-            pbar['value'] = pct
-            lbl_info.config(text=f"กำลังประมวลผล: {current} / {total} ไฟล์")
-            progress_win.update_idletasks()
+            # Optimization 2: อัปเดต GUI เฉพาะตอนเริ่ม, ตอนจบ หรือทุกๆ 50 ไฟล์
+            if current == 1 or current == total or current % 50 == 0:
+                pct = int((current / total) * 100) if total > 0 else 0
+                pbar['value'] = pct
+                lbl_info.config(text=f"กำลังประมวลผล: {current} / {total} ไฟล์")
+                progress_win.update_idletasks()
 
         self.root.update_idletasks()
         
