@@ -1,15 +1,16 @@
-﻿StudyName,Format
-20210033,Study number 3 หลัก (933) + Site number 5 หลัก (62001) + participant number 3 หลัก (93362001XXX)
-OP-1250-301,6606-6XXX
-OP-1250-302,6606-7XXX
-BNT327-06,Site number + participant number (764-01-XXXX)
-BO45217, participant number 5 หลัก XXXXX
-CT-P51 3.1,Site number 4 หลัก (5602) + participant number 4 หลัก (5602XXXX)
-MB12-C-02-24,Site number + participant number (XXXXXXYYY)
-MK-2400-001,Site 4 หลัก (0887) + Screening 5 หลัก (0887YYYYY) หรือ Randomization 6 หลัก (0887XXXXXX)
-MK-1022-016,Site 4 หลัก (2924) + Screening 5 หลัก (2924YYYYY) หรือ Randomization 6 หลัก (2924XXXXXX)
-MK-2870-009,Site 4 หลัก (4006) + Screening 5 หลัก (4006YYYYY) หรือ Randomization 6 หลัก (4006XXXXXX)
-MK-2870-023,Site 4 หลัก (2300) + Screening 5 หลัก (2300YYYYY) หรือ Randomization 6 หลัก (2300XXXXXX)
-V940-011,Site number 4 หลัก (3002) + Screening number 5 หลัก (3002YYYYY) หรือ Randomization 6 หลัก (3002XXXXXX)
-MO41552,Site number 6 หลัก (501243) + participant number 4 หลัก (501243XXXX)
-TAS-6417-301,Site number + participant number (800-XXX)
+StudyName,Format
+20210033 (Marigold),Study number 3 หลัก (933) + Site number 5 หลัก (62001) + participant number 3 หลัก (93362001XXX)
+BNT327-06,Site number 5 หลัก (764-01) + participant number 4 หลัก (764-01-XXXX)
+BO45217 (Krascendo-1), participant number 5 หลัก (XXXXX)
+CT-P51 3.1 (Celltrion),Site number 4 หลัก (5602) + participant number 4 หลัก (5602XXXX)
+MB12-C-02-24 (Benito),Site number + participant number (XXXXXXYYY)
+MO41552 (ROS-1),Site number 6 หลัก (501243) + participant number 4 หลัก (501243XXXX)
+MK-2400-001,Site 4 หลัก (0887) + Screening number 5 หลัก (0887YYYYY) หรือ Randomization number 6 หลัก (0887XXXXXX)
+MK-1022-016,Site 4 หลัก (2924) + Screening number 5 หลัก (2924YYYYY) หรือ Randomization number 6 หลัก (2924XXXXXX)
+MK-2870-009,Site 4 หลัก (4006) + Screening number 5 หลัก (4006YYYYY) หรือ Randomization number 6 หลัก (4006XXXXXX)
+MK-2870-023,Site 4 หลัก (2300) + Screening number 5 หลัก (2300YYYYY) หรือ Randomization number 6 หลัก (2300XXXXXX)
+OP-1250-301 (OPERA-01),Site number 4 หลัก (6606) + participant number 4 หลัก (6606-6XXX)
+OP-1250-302 (OPERA-02),Site number 4 หลัก (6606) + participant number 4 หลัก (6606-7XXX)
+TAS-6417-301 (Rezilient-3),Site number 3 หลัก (800) + participant number 3 หลัก (800-XXX)
+V940-011,Site number 4 หลัก (3002) + Screening number 5 หลัก (3002YYYYY) หรือ Randomization number 6 หลัก (3002XXXXXX)
+WO46069 (BREnnA), participant number 6 หลัก (1000xx)

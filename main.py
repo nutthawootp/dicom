@@ -1,15 +1,19 @@
-import os
+import concurrent.futures
 import csv
 import logging
-from pathlib import Path
-from typing import Dict, Tuple, Optional, List, Callable
+import os
+import tkinter as tk
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
+
 import pydicom
 from pydicom.errors import InvalidDicomError
-import tkinter as tk
-from tkinter import filedialog, messagebox
-from tkinter import ttk
 
+# ==========================================
+# 1. Configuration & Constants
+# ==========================================
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
@@ -35,6 +39,29 @@ class DeIDConfig:
 
 CONFIG = DeIDConfig()
 
+def _initialize_dynamic_config():
+    """Loads configuration from external files and creates them if they don't exist."""
+    skip_list_file = 'series_to_skip.txt'
+    if not os.path.exists(skip_list_file):
+        try:
+            with open(skip_list_file, 'w', encoding='utf-8') as f:
+                f.write("# Add series numbers to skip, one per line.\n")
+                f.write("# Lines starting with # are comments and will be ignored.\n")
+                f.write("99999\n")
+            logger.info(f"Created default skip list file: '{skip_list_file}'.")
+        except (OSError, ValueError, RuntimeError) as e:
+            logger.error(f"Could not create default skip list file '{skip_list_file}': {e}")
+
+    try:
+        with open(skip_list_file, 'r', encoding='utf-8') as f:
+            loaded_series = {line.strip() for line in f if line.strip() and not line.startswith('#')}
+            if loaded_series:
+                CONFIG.SERIES_TO_SKIP = loaded_series
+                logger.info(f"Loaded {len(loaded_series)} series to skip from '{skip_list_file}'.")
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.error(f"Could not load '{skip_list_file}', using default configuration: {e}")
+
+
 # Palette สีสไตล์ Modern Medical Terminal
 COLOR_PRIMARY = "#1E293B"    # Slate Navy
 COLOR_SECONDARY = "#0F766E"  # Medical Teal
@@ -45,6 +72,9 @@ COLOR_DANGER = "#EF4444"     # Soft Red
 COLOR_BORDER = "#E2E8F0"     # Light Gray
 COLOR_TEXT_DARK = "#0F172A"  # Very Dark Blue
 
+# ==========================================
+# 2. Data Models
+# ==========================================
 @dataclass
 class PatientInfo:
     PatientName: str = 'ไม่พบข้อมูล / ว่างเปล่า'
@@ -70,8 +100,11 @@ class ProcessResult:
     skip_count: int = 0
     error_count: int = 0
     qc_failed_count: int = 0 
-    failed_files_details: List[str] = field(default_factory=list)
+    failed_files_details: list[str] = field(default_factory=list)
 
+# ==========================================
+# 3. DICOM Processing Service
+# ==========================================
 class DICOMProcessor:
     @staticmethod
     def is_valid_dicom_file(filepath: str) -> bool:
@@ -81,23 +114,23 @@ class DICOMProcessor:
         return True
     
     @staticmethod
-    def read_dicom_metadata(filepath: str) -> Optional[pydicom.Dataset]:
+    def read_dicom_metadata(filepath: str) -> pydicom.Dataset | None:
         try:
             return pydicom.dcmread(filepath, stop_before_pixels=True)
         except InvalidDicomError:
             return None
-        except Exception as e:
-            logger.error(f"Error reading {filepath}: {str(e)}")
+        except (OSError, ValueError, RuntimeError)  as e:
+            logger.error(f"Error reading {filepath}: {e!s}")
             return None
 
     @staticmethod
-    def read_dicom_full(filepath: str) -> Optional[pydicom.Dataset]:
+    def read_dicom_full(filepath: str) -> pydicom.Dataset | None:
         try:
             return pydicom.dcmread(filepath)
         except InvalidDicomError:
             return None
-        except Exception as e:
-            logger.error(f"Error reading {filepath}: {str(e)}")
+        except (OSError, ValueError, RuntimeError)  as e:
+            logger.error(f"Error reading {filepath}: {e!s}")
             return None
     
     @staticmethod
@@ -105,11 +138,12 @@ class DICOMProcessor:
         try:
             value = getattr(dataset, attr, default)
             return str(value) if value else default
-        except Exception as e:  # noqa: F841
+        except (OSError, ValueError, RuntimeError) as e:
+            logger.debug(f"Could not retrieve attribute {attr}: {e!s}")
             return default
 
     @staticmethod
-    def run_quality_control(filepath: str, expected_subject: str, expected_protocol: str) -> Tuple[bool, str]:
+    def run_quality_control(filepath: str, expected_subject: str, expected_protocol: str) -> tuple[bool, str]:
         try:
             ds = pydicom.dcmread(filepath)
             if 'PixelData' not in ds:
@@ -119,42 +153,58 @@ class DICOMProcessor:
             if str(getattr(ds, 'PatientID', '')) != expected_protocol:
                 return False, "ค่า Patient ID ไม่ได้รับการแก้ไขอย่างถูกต้อง"
             return True, "ผ่านการตรวจสอบ QC"
-        except Exception as e:
-            return False, f"ไฟล์เสียหายหลังจากบันทึก ({str(e)})"
+        except (OSError, ValueError, RuntimeError) as e:
+            return False, f"ไฟล์เสียหายหลังจากบันทึก ({e!s})"
+
 
 class DICOMScanner:
     def __init__(self, processor: DICOMProcessor):
         self.processor = processor
     
-    def scan_folder(self, folder_path: str, progress_callback: Optional[Callable[[int, int, str], None]] = None) -> Tuple[PatientInfo, Dict[str, SeriesData]]:
+    # ปรับปรุงให้สแกนไฟล์แบบ Multithreading เพื่อเพิ่มความเร็วในการดึงข้อมูลเบื้องต้น
+    def scan_folder(self, folder_path: str, progress_callback: Callable[[int, int, str], None] | None = None) -> tuple[PatientInfo, dict[str, SeriesData]]:
         patient_info = PatientInfo()
         series_info = {}
         found_patient_info = False
         
-        total_files = sum(len(files) for _, _, files in os.walk(folder_path))
-        processed_count = 0
-        
+        filepaths = []
         for root, _, files in os.walk(folder_path):
             for filename in files:
+                filepaths.append(os.path.join(root, filename))
+
+        total_files = len(filepaths)
+        processed_count = 0
+        datasets: list[pydicom.Dataset] = []
+
+        def _scan_worker(filepath: str) -> pydicom.Dataset | None:
+            if not self.processor.is_valid_dicom_file(filepath):
+                return None
+            return self.processor.read_dicom_metadata(filepath)
+
+        max_workers = min(32, (os.cpu_count() or 1) + 4)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_path = {executor.submit(_scan_worker, path): path for path in filepaths}
+            
+            for future in concurrent.futures.as_completed(future_to_path):
+                path = future_to_path[future]
                 processed_count += 1
-                filepath = os.path.join(root, filename)
                 
+                try:
+                    dataset = future.result()
+                    if dataset:
+                        datasets.append(dataset)
+                except (OSError, ValueError, RuntimeError) as exc:
+                    logger.error(f"File {path} generated an exception during scan: {exc}")
+
                 if progress_callback:
-                    progress_callback(processed_count, total_files, f"กำลังอ่านไฟล์: {filename}")
-                
-                if not self.processor.is_valid_dicom_file(filepath):
-                    continue
-                
-                dataset = self.processor.read_dicom_metadata(filepath)
-                if not dataset:
-                    continue
-                
-                if not found_patient_info:
-                    patient_info = self._extract_patient_info(dataset)
-                    found_patient_info = True
-                
-                self._extract_series_info(dataset, series_info)
+                    progress_callback(processed_count, total_files, f"กำลังอ่านไฟล์: {os.path.basename(path)}")
         
+        for dataset in datasets:
+            if not found_patient_info:
+                patient_info = self._extract_patient_info(dataset)
+                found_patient_info = True
+            self._extract_series_info(dataset, series_info)
+
         return patient_info, series_info
     
     def _extract_patient_info(self, dataset: pydicom.Dataset) -> PatientInfo:
@@ -171,7 +221,7 @@ class DICOMScanner:
             InstitutionAddress=self.processor.get_attribute_safe(dataset, 'InstitutionAddress', 'ไม่พบข้อมูล / ว่างเปล่า')
         )
     
-    def _extract_series_info(self, dataset: pydicom.Dataset, series_info: Dict):
+    def _extract_series_info(self, dataset: pydicom.Dataset, series_info: dict):
         s_num = self.processor.get_attribute_safe(dataset, 'SeriesNumber', 'Unknown')
         s_desc = self.processor.get_attribute_safe(dataset, 'SeriesDescription', 'ไม่มีรายละเอียด (No Description)')
         spacing = self.processor.get_attribute_safe(dataset, 'SpacingBetweenSlices', 'ไม่ระบุ')
@@ -183,11 +233,12 @@ class DICOMScanner:
         series_info[s_num].spacing.add(spacing)
         series_info[s_num].thickness.add(thickness)
 
+
 class DICOMDeIdentifier:
     def __init__(self, processor: DICOMProcessor):
         self.processor = processor
     
-    def should_skip_file(self, dataset: pydicom.Dataset) -> Optional[str]:
+    def should_skip_file(self, dataset: pydicom.Dataset) -> str | None:
         sop_class = self.processor.get_attribute_safe(dataset, 'SOPClassUID', '')
         if sop_class == CONFIG.SECONDARY_CAPTURE_UID:
             return "Secondary Capture (Report)"
@@ -246,72 +297,99 @@ class DICOMDeIdentifier:
         for tag in tags_to_delete:
             del dataset[tag]
 
+
 class DICOMFolderProcessor:
     def __init__(self, deidentifier: DICOMDeIdentifier):
         self.deidentifier = deidentifier
         self.processor = deidentifier.processor
     
-    def process(self, input_folder: str, output_folder: str, subject_id: str, protocol_number: str, clear_sex: bool = True, clear_age: bool = True, progress_callback: Optional[Callable[[int, int, str], None]] = None) -> ProcessResult:
+    # นำระบบ Multithreading กลับมาใช้เพื่อคงประสิทธิภาพในการแปลงไฟล์จำนวนมาก
+    def process(self, input_folder: str, output_folder: str, subject_id: str, protocol_number: str, clear_sex: bool = True, clear_age: bool = True, progress_callback: Callable[[int, int, str], None] | None = None) -> ProcessResult:
         result = ProcessResult()
-        total_files = sum(len(files) for _, _, files in os.walk(input_folder))
-        processed_count = 0
         
+        tasks = []
         for root, _, files in os.walk(input_folder):
             output_dir = self._create_output_dir(root, input_folder, output_folder)
-            
             for filename in files:
-                processed_count += 1
                 input_path = os.path.join(root, filename)
+                tasks.append((input_path, output_dir, filename))
                 
-                if progress_callback:
-                    progress_callback(processed_count, total_files, f"กำลังประมวลผล: {filename}")
+        total_files = len(tasks)
+        processed_count = 0
+        
+        def _process_worker(task_data):
+            input_path, out_dir, fname = task_data
+            
+            if not self.processor.is_valid_dicom_file(input_path):
+                return 'SKIP', "Not a DICOM file"
                 
-                if not self.processor.is_valid_dicom_file(input_path):
-                    result.skip_count += 1
-                    continue
+            meta_dataset = self.processor.read_dicom_metadata(input_path)
+            if not meta_dataset:
+                return 'ERROR', "ไม่สามารถอ่านโครงสร้างไฟล์ DICOM เต็มรูปแบบได้"
                 
-                process_success = False
-                last_error_message = ""
+            skip_reason = self.deidentifier.should_skip_file(meta_dataset)
+            if skip_reason:
+                return 'SKIP', skip_reason
                 
+            last_error_message = ""
+            for attempt in range(1, 4): 
                 try:
-                    # Optimization 1: อ่านไฟล์แบบเต็มเพียงครั้งเดียว
                     dataset = self.processor.read_dicom_full(input_path)
                     if not dataset:
                         last_error_message = "ไม่สามารถอ่านโครงสร้างไฟล์ DICOM เต็มรูปแบบได้"
+                        break 
+                    
+                    self.deidentifier.deidentify(dataset, subject_id, protocol_number, clear_sex, clear_age)
+                    output_path = os.path.join(out_dir, f"{subject_id}_{fname}")
+                    dataset.save_as(output_path)
+                    
+                    is_qc_passed, qc_message = self.processor.run_quality_control(output_path, subject_id, protocol_number)
+                    
+                    if is_qc_passed:
+                        return 'SUCCESS', ""
                     else:
-                        # ตรวจสอบเงื่อนไขการข้ามไฟล์ด้วย dataset เต็มที่อ่านมาแล้ว
-                        skip_reason = self.deidentifier.should_skip_file(dataset)
-                        if skip_reason:
-                            result.skip_count += 1
-                            continue
+                        last_error_message = f"QC Failed: {qc_message}"
+                        if os.path.exists(output_path):
+                            os.remove(output_path)
                             
-                        # ส่งผ่านตัวแปรทางเลือกการลบไปยัง De-Identifier Core ทันที
-                        self.deidentifier.deidentify(dataset, subject_id, protocol_number, clear_sex, clear_age)
-                        output_path = os.path.join(output_dir, f"{subject_id}_{filename}")
-                        dataset.save_as(output_path)
-                        
-                        is_qc_passed, qc_message = self.processor.run_quality_control(output_path, subject_id, protocol_number)
-                        if is_qc_passed:
-                            process_success = True
-                        else:
-                            last_error_message = f"QC Failed: {qc_message}"
-                            if os.path.exists(output_path):
-                                os.remove(output_path)
-                except Exception as e:
-                    last_error_message = f"ข้อผิดพลาด: {str(e)}"
-                    output_path = os.path.join(output_dir, f"{subject_id}_{filename}")
+                except (OSError, ValueError, RuntimeError)  as e:
+                    last_error_message = f"ข้อผิดพลาด: {e!s}"
+                    output_path = os.path.join(out_dir, f"{subject_id}_{fname}")
                     if os.path.exists(output_path):
                         os.remove(output_path)
+                        
+            if "ไม่สามารถอ่านโครงสร้าง" in last_error_message:
+                return 'ERROR', last_error_message
+            else:
+                return 'QC_FAIL', f"📁 Path: {input_path}\n❌ สาเหตุ: {last_error_message}"
+
+        max_workers = min(32, (os.cpu_count() or 1) + 4) 
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_task = {executor.submit(_process_worker, task): task for task in tasks}
+            
+            for future in concurrent.futures.as_completed(future_to_task):
+                task = future_to_task[future]
+                input_path, _out_dir, fname = task
+                processed_count += 1
                 
-                if process_success:
-                    result.success_count += 1
-                else:
-                    if "ไม่สามารถอ่านโครงสร้าง" in last_error_message:
+                try:
+                    status, message = future.result()
+                    if status == 'SUCCESS':
+                        result.success_count += 1
+                    elif status == 'SKIP':
+                        result.skip_count += 1
+                    elif status == 'ERROR':
                         result.error_count += 1
-                    elif last_error_message:
+                    elif status == 'QC_FAIL':
                         result.qc_failed_count += 1
-                        result.failed_files_details.append(f"📁 Path: {input_path}\n❌ สาเหตุ: {last_error_message}")
-        
+                        result.failed_files_details.append(message)
+                except (OSError, ValueError, RuntimeError) as exc:
+                    result.error_count += 1
+                    logger.error(f"File {fname} generated an exception: {exc}")
+                
+                if progress_callback:
+                    progress_callback(processed_count, total_files, f"กำลังประมวลผล: {fname}")
+                    
         return result
     
     @staticmethod
@@ -322,13 +400,19 @@ class DICOMFolderProcessor:
         return output_dir
 
 # ==========================================
-# UI Engine: Single-Window Modern Layout
+# 4. UI Engine: Single-Window Modern Layout
 # ==========================================
 class ModernDICOMDeIDApp:
     def __init__(self, root):
         self.root = root
         self.root.title("DICOM Client De-identification Workspace")
-        self.root.geometry("1100x750")
+        
+        # ตั้งค่าให้หน้าต่างหลักเปิดเต็มจอก่อนตามที่ระบุ
+        try:
+            self.root.state('zoomed')
+        except tk.TclError:
+            self.root.geometry("1100x750") # Fallback ในกรณีที่ไม่รองรับ zoomed
+            
         self.root.minsize(1050, 700)
         self.root.configure(bg=COLOR_BG_LIGHT)
         
@@ -344,7 +428,7 @@ class ModernDICOMDeIDApp:
         
         # กำหนดตัวแปรสำหรับเก็บบริบทการกดเลือก Checkbox ลบ เพศ/อายุ (Default = True)
         self.var_clear_age = tk.BooleanVar(value=True)
-        self.var_clear_sex = tk.BooleanVar(value=True)
+        self.var_clear_sex = tk.BooleanVar(value=False)
         
         self._init_styles()
         self._build_main_layout()
@@ -378,7 +462,7 @@ class ModernDICOMDeIDApp:
         lbl_app_title.pack(fill=tk.X)
         
         self.steps_indicators = []
-        steps_text = ["1. คัดกรองข้อมูลต้นฉบับ", "2. กำหนดและประเมินรหัส", "3. ดำเนินการและประเมินผล"]
+        steps_text = ["1. ตรวจสอบข้อมูลต้นฉบับ", "2. ลงข้อมูล Subject ID และ Protocol", "3. ดำเนินการและประเมินผล"]
         for i, text in enumerate(steps_text, 1):
             frame_ind = tk.Frame(self.sidebar, bg=COLOR_PRIMARY, pady=12, padx=15)
             frame_ind.pack(fill=tk.X)
@@ -434,7 +518,7 @@ class ModernDICOMDeIDApp:
 
         if step_num == 1:
             self.btn_back.pack_forget()
-            self.btn_next.config(text="ตรวจสอบรหัสถัดไป ➔")
+            self.btn_next.config(text="ระบุข้อมูลถัดไป ➔")
         elif step_num == 2:
             self.btn_back.pack(side=tk.LEFT)
             self.btn_next.config(text="เริ่มกระบวนการ De-ID ➔")
@@ -516,7 +600,6 @@ class ModernDICOMDeIDApp:
         def update_progress(current, total, msg):
             if not progress_win.winfo_exists():
                 return
-            # Optimization 2: อัปเดต GUI เฉพาะตอนเริ่ม, ตอนจบ หรือทุกๆ 50 ไฟล์
             if current == 1 or current == total or current % 50 == 0:
                 pct = int((current / total) * 100) if total > 0 else 0
                 pbar['value'] = pct
@@ -559,8 +642,8 @@ class ModernDICOMDeIDApp:
         sorted_keys = sorted(self.series_info.keys(), key=lambda x: float(x) if x.replace('.', '', 1).isdigit() else float('inf'))
         for key in sorted_keys:
             data = self.series_info[key]
-            spacing = ", ".join(sorted(list(data.spacing)))
-            thickness = ", ".join(sorted(list(data.thickness)))
+            spacing = ", ".join(sorted(data.spacing))
+            thickness = ", ".join(sorted(data.thickness))
             self.tree_series.insert("", tk.END, values=(key, data.description, spacing, thickness))
 
     # ==========================================
@@ -610,7 +693,7 @@ class ModernDICOMDeIDApp:
 
         # --- ส่วนของอินเทอร์เฟซเพิ่มทางเลือกลบข้อมูล เพศ และ อายุ ---
         options_frame = tk.LabelFrame(input_card, text=" ตัวเลือกการลบ/ปกปิดข้อมูลสถิติประชากร ", font=("Segoe UI", 10, "bold"),
-                                   bg=COLOR_CARD_BG, fg=COLOR_SECONDARY, bd=1, relief=tk.SOLID, padx=10, pady=8)
+                                bg=COLOR_CARD_BG, fg=COLOR_SECONDARY, bd=1, relief=tk.SOLID, padx=10, pady=8)
         options_frame.pack(fill=tk.X, pady=(0, 15))
 
         cb_age = tk.Checkbutton(options_frame, text="ลบข้อมูลอายุคนไข้ (Clear Patient Age)", variable=self.var_clear_age, 
@@ -655,7 +738,7 @@ class ModernDICOMDeIDApp:
                     writer = csv.writer(f)
                     writer.writerow(["StudyName", "Format"])
                     writer.writerows(default_formats)
-            except Exception as e:
+            except (OSError, ValueError, RuntimeError) as e:
                 logger.error(f"Cannot create default study_formats.csv: {e}")
             formats = default_formats
         else:
@@ -666,7 +749,7 @@ class ModernDICOMDeIDApp:
                     for row in reader:
                         if len(row) >= 2:
                             formats.append((row[0].strip(), row[1].strip()))
-            except Exception as e:
+            except (OSError, ValueError, RuntimeError) as e:
                 logger.error(f"Error reading {filepath}: {e}")
                 formats = default_formats
 
@@ -723,14 +806,14 @@ class ModernDICOMDeIDApp:
         self.lbl_summary_details.pack(anchor="w", pady=(5, 0))
 
         tbl_frame = tk.LabelFrame(frame, text=" ตารางเปรียบเทียบค่าพารามิเตอร์ของระบบก่อน-หลังแปลงข้อมูล (Before vs After) ", 
-                                  font=("Segoe UI", 10, "bold"), bg=COLOR_CARD_BG, fg=COLOR_SECONDARY, bd=1, relief=tk.SOLID)
+                                font=("Segoe UI", 10, "bold"), bg=COLOR_CARD_BG, fg=COLOR_SECONDARY, bd=1, relief=tk.SOLID)
         tbl_frame.pack(fill=tk.BOTH, expand=True)
 
         cols = ("tag", "orig", "mod")
         self.tree_comp = ttk.Treeview(tbl_frame, columns=cols, show="headings")
         self.tree_comp.heading("tag", text="คุณลักษณะของ DICOM TAG")
         self.tree_comp.heading("orig", text="ข้อมูลต้นฉบับดั้งเดิม (Before)")
-        self.tree_comp.heading("mod", text="ข้อมูลที่ได้รับการปกปิดใหม่ (After)")
+        self.tree_comp.heading("mod", text="ข้อมูลที่ได้รับการปกปิด (After)")
         
         self.tree_comp.column("tag", width=180, anchor=tk.W)
         self.tree_comp.column("orig", width=320, anchor=tk.W)
@@ -765,7 +848,6 @@ class ModernDICOMDeIDApp:
         def update_progress(current, total, msg):
             if not progress_win.winfo_exists():
                 return
-            # Optimization 2: อัปเดต GUI เฉพาะตอนเริ่ม, ตอนจบ หรือทุกๆ 50 ไฟล์
             if current == 1 or current == total or current % 50 == 0:
                 pct = int((current / total) * 100) if total > 0 else 0
                 pbar['value'] = pct
@@ -774,7 +856,7 @@ class ModernDICOMDeIDApp:
 
         self.root.update_idletasks()
         
-        # ส่งผ่านตัวแปรการปิดบังอายุและเพศเข้าสู่ Loop ระดับโฟลเดอร์
+        # ส่งผ่านตัวแปรการปิดบังอายุและเพศเข้าสู่ Loop ระดับโฟลเดอร์แบบ Multithreading
         result = self.folder_processor.process(
             self.input_dir, self.output_dir, subj, prot, 
             clear_sex=clear_sex, clear_age=clear_age, 
@@ -787,8 +869,8 @@ class ModernDICOMDeIDApp:
 
         self.lbl_summary_details.config(
             text=f"แปลงผ่านการรับรองและตรวจ QC สำเร็จ: {result.success_count} ไฟล์ | ข้ามไฟล์/รายงาน: {result.skip_count} ไฟล์\n"
-                 f"ไม่ผ่านระบบตรวจสอบโครงสร้าง: {result.error_count} ไฟล์ | ไม่ผ่านเกณฑ์ควบคุมมาตรฐาน QC (ถูกทำลายทิ้ง): {result.qc_failed_count} ไฟล์\n"
-                 f"โฟลเดอร์ผลลัพธ์ใหม่เก็บไว้ที่: {self.output_dir}"
+                f"ไม่ผ่านระบบตรวจสอบโครงสร้าง: {result.error_count} ไฟล์ | ไม่ผ่านเกณฑ์ควบคุมมาตรฐาน QC (ถูกทำลายทิ้ง): {result.qc_failed_count} ไฟล์\n"
+                f"โฟลเดอร์ผลลัพธ์ใหม่เก็บไว้ที่: {self.output_dir}"
         )
 
         for idx_row in self.tree_comp.get_children():
@@ -823,7 +905,7 @@ class ModernDICOMDeIDApp:
         if result.qc_failed_count > 0:
             details_str = "\n\n".join(result.failed_files_details)
             messagebox.showwarning("ตรวจสอบความเข้ากันได้", 
-                                   f"คำเตือน: มีไฟล์จำนวน {result.qc_failed_count} ไฟล์ที่ไม่ผ่านการทำ QC และถูกลบทิ้งจากปลายทาง\n\nรายละเอียดข้อผิดพลาดเพิ่มเติม:\n{details_str}")
+                                f"คำเตือน: มีไฟล์จำนวน {result.qc_failed_count} ไฟล์ที่ไม่ผ่านการทำ QC และถูกลบทิ้งจากปลายทาง\n\nรายละเอียดข้อผิดพลาดเพิ่มเติม:\n{details_str}")
 
     # ==========================================
     # Controller Logic: ทิศทางการสลับหน้าจอ (Wizard Navigation)
@@ -865,6 +947,7 @@ class ModernDICOMDeIDApp:
             self.show_step(1)
 
 if __name__ == "__main__":
+    _initialize_dynamic_config()
     root = tk.Tk()
     app = ModernDICOMDeIDApp(root)
     root.mainloop()
