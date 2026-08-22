@@ -1,0 +1,4 @@
+# Add series numbers to skip, one per line.
+# Lines starting with # are comments and will be ignored.
+99999
+9999

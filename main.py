@@ -332,6 +332,7 @@ class DICOMFolderProcessor:
                 return 'SKIP', skip_reason
                 
             last_error_message = ""
+            output_path = os.path.join(out_dir, f"{subject_id}_{fname}")
             for attempt in range(1, 4): 
                 try:
                     dataset = self.processor.read_dicom_full(input_path)
@@ -340,7 +341,6 @@ class DICOMFolderProcessor:
                         break 
                     
                     self.deidentifier.deidentify(dataset, subject_id, protocol_number, clear_sex, clear_age)
-                    output_path = os.path.join(out_dir, f"{subject_id}_{fname}")
                     dataset.save_as(output_path)
                     
                     is_qc_passed, qc_message = self.processor.run_quality_control(output_path, subject_id, protocol_number)
@@ -354,7 +354,6 @@ class DICOMFolderProcessor:
                             
                 except (OSError, ValueError, RuntimeError)  as e:
                     last_error_message = f"ข้อผิดพลาด: {e!s}"
-                    output_path = os.path.join(out_dir, f"{subject_id}_{fname}")
                     if os.path.exists(output_path):
                         os.remove(output_path)
                         
@@ -457,12 +456,12 @@ class ModernDICOMDeIDApp:
         self.sidebar.pack(side=tk.LEFT, fill=tk.Y)
         self.sidebar.pack_propagate(False)
         
-        lbl_app_title = tk.Label(self.sidebar, text="DICOM DeID\nWorkspace", fg="white", bg=COLOR_PRIMARY, 
+        lbl_app_title = tk.Label(self.sidebar, text="DICOM De-ID\nWorkspace", fg="white", bg=COLOR_PRIMARY, 
                                 font=("Segoe UI", 15, "bold"), pady=20)
         lbl_app_title.pack(fill=tk.X)
         
         self.steps_indicators = []
-        steps_text = ["1. ตรวจสอบข้อมูลต้นฉบับ", "2. ลงข้อมูล Subject ID และ Protocol", "3. ดำเนินการและประเมินผล"]
+        steps_text = ["1. ตรวจสอบข้อมูลต้นฉบับ", "2. กรอกข้อมูล De-ID", "3. ดำเนินการและประเมินผล"]
         for i, text in enumerate(steps_text, 1):
             frame_ind = tk.Frame(self.sidebar, bg=COLOR_PRIMARY, pady=12, padx=15)
             frame_ind.pack(fill=tk.X)
